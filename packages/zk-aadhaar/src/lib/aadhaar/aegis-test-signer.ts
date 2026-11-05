@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT
+// Public certificate of the AegisJIT TEST signer (NOT UIDAI) — synthetic test QRs only.
+// Copy of prover/test-signer/aegis-test-signer.cert.pem so browser bundles never touch the
+// prover directory (which also holds the test private key). Checked by tests/aegis-test-signer.test.ts.
+export const AEGIS_TEST_SIGNER_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIDnzCCAoegAwIBAgIUG3ozDV4NMTh+fKDRDvCtCXhBeLMwDQYJKoZIhvcNAQEL
+BQAwXzElMCMGA1UECgwcQWVnaXNKSVQgWksgVEVTVCAoTk9UIFVJREFJKTE2MDQG
+A1UEAwwtQWVnaXNKSVQgQW5vbiBBYWRoYWFyIFRFU1Qgc2lnbmVyIC0gTk9UIFVJ
+REFJMB4XDTI2MTEwNTExMTI0OVoXDTM2MTEwMjExMTI0OVowXzElMCMGA1UECgwc
+QWVnaXNKSVQgWksgVEVTVCAoTk9UIFVJREFJKTE2MDQGA1UEAwwtQWVnaXNKSVQg
+QW5vbiBBYWRoYWFyIFRFU1Qgc2lnbmVyIC0gTk9UIFVJREFJMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3nefb/hB52nChWWA804bYyh4K40rDdBcVoxl
+2X9YSBTOQsE7gn3RbGvT0maGj45javQ8s5Jct/peiXX/vpO3jOp477gzrsUm68hZ
+WLDDE0uQ1cV3yJny7kCtHVCb7142OB3mX+6/StAqC0d/ZlRJgJzVIdYCw5eQOCzg
+M+p1oAm//LLWj+POBfyzHkYMB7IzA/7xMBXWe/TjUGADWqrl0YTykhwp7COPe3Od
+lKkNif9/qFuwTyzFesWcBZvCKK3gQzp/Is0LHBsaCCGm48Uz42kbsymFb6WjzmG5
+RITqBnfjwG1NtZs+iHmHs3UMQh5EIVnUUg0ExNyV7gSEVKmw1wIDAQABo1MwUTAd
+BgNVHQ4EFgQUwAm/bxTy1yDj+AJI/mWivHDO5iowHwYDVR0jBBgwFoAUwAm/bxTy
+1yDj+AJI/mWivHDO5iowDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAo41QD4yyvkjPoOyzTy96UDMTCQ+2O+d2PdzobdICmGysU5igxYlH/zGxosc+
+6FX0mEA7U6fzpki0Kgxd3/vjBpfnJG8lsD/srWFbkl1AYMvXZ4VcdEecKaDKwRii
+xGg9VmBKkRSO4TO6IfbuMGIPzTVfC41zzRae63s15YDEJH4LOBtiC29sggS22kX/
+GxlN2HNbDLnjh21fu7hNyCQdwdei2jZsROaB/vlDR2F0B9efAkahwcdrlBNiBC9G
+5lNbfZXILEIYxLKYBLsevpyFNKhVfgDjPCWPAoL+nowzxOdTC+kK8+a7yW+YwlZK
+nAWoobIhLOKQ1y39qedzUSoU6Q==
+-----END CERTIFICATE-----`;

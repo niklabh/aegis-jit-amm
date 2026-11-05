@@ -1,3 +1,4 @@
 node_modules/
 dist/
 public/deployment.json
+public/wasm/

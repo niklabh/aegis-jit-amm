@@ -2,8 +2,8 @@
 // Framework-agnostic AegisJIT client used by the dashboard (and ui/scripts/smoke.ts).
 
 import {
-  createPublicClient, createWalletClient, decodeAbiParameters, defineChain, http, parseEventLogs,
-  BaseError, ContractFunctionRevertedError, type Address, type Hex,
+  createPublicClient, createWalletClient, decodeAbiParameters, defineChain, encodeAbiParameters, encodePacked,
+  http, parseEventLogs, size, BaseError, ContractFunctionRevertedError, type Address, type Hex,
 } from "viem";
 
 export type Order = { maker: Address; traits: Hex; data: Hex };
@@ -19,11 +19,42 @@ export interface Deployment {
     usdcLiquidity: string; wethLiquidity: string; lambdaBps: number; virtualBoostBps: number;
     baseFeeBps: number; maxSurgeFeeBps: number; impactThresholdBps: string; decayWindowSec: number;
   };
-  addr: Record<"aqua" | "router" | "hook" | "usdc" | "weth" | "usdcVault" | "wethVault" | "adapter" | "anonAadhaar" | "maker", Address>;
+  addr: Record<"aqua" | "router" | "hook" | "usdc" | "weth" | "usdcVault" | "wethVault" | "adapter" | "anonAadhaar" | "groth16" | "pairingVerifier" | "forwarder" | "maker", Address>;
   accounts: Record<"maker" | "human" | "bot" | "whale", Address>;
   takerData: Record<"human" | "bot" | "whale", Hex>;
-  abi: { router: any; vault: any; aqua: any };
+  zk: { proverUrl: string; epochDuration: number; payloadLength: number; takerHeader: Hex; trustRoot: string; maharashtraPacked: string };
+  abi: { router: any; vault: any; aqua: any; adapter: any };
 }
+
+/** Output of the local prover (packages/zk-aadhaar/prover/server.ts) */
+export interface ProverResult {
+  qr: { version: string; rsa: { status: string; key: string | null } };
+  proof: {
+    groth16Proof: string[];
+    publicSignals: Record<"pubkeyHash" | "nullifier" | "timestamp" | "ageAbove18" | "gender" | "pincode" | "state" | "nullifierSeed" | "signalHash", string>;
+    provingMs: number;
+    stateText: string;
+  };
+}
+
+/** 0x2A taker payload: [uint16 L][nullifier][revealArray[4]][abi.encode(timestamp, uint256[8])] */
+export function encodeZkPayload(r: ProverResult): Hex {
+  const ps = r.proof.publicSignals;
+  const envelope = proofEnvelope(r);
+  const body = encodePacked(
+    ["uint256", "uint256", "uint256", "uint256", "uint256", "bytes"],
+    [BigInt(ps.nullifier), BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state), envelope],
+  );
+  return encodePacked(["uint16", "bytes"], [size(body), body]);
+}
+
+export function proofEnvelope(r: ProverResult): Hex {
+  return encodeAbiParameters([{ type: "uint256" }, { type: "uint256[8]" }],
+    [BigInt(r.proof.publicSignals.timestamp), r.proof.groth16Proof.map(BigInt) as any]);
+}
+
+/** Groth16 proof as 256 bytes (8 × 32-byte BN254 coordinates) */
+export const proofHex = (r: ProverResult): Hex => encodePacked(Array(8).fill("uint256"), r.proof.groth16Proof.map(BigInt) as any);
 
 export const FEE_BPS = 1_000_000_000n;
 export const USDC_DEC = 6;
@@ -58,12 +89,12 @@ export function createAegisClient(dep: Deployment) {
   }
 
   // ------------------------------------------------------------------ quote / swap
-  async function quote(p: Profile, amountIn: bigint): Promise<QuoteResult> {
+  async function quote(p: Profile, amountIn: bigint, dataOverride?: Hex): Promise<QuoteResult> {
     try {
       const view = (await pub.readContract({ ...R, functionName: "asView", args: [] })) as Address; // router.asView()
       const [ain, aout] = (await pub.readContract({
         address: view, abi: dep.abi.router, functionName: "quote",
-        args: [dep.order, amountIn, dataOf(p)], account: takerOf(p),
+        args: [dep.order, amountIn, dataOverride ?? dataOf(p)], account: takerOf(p),
       })) as [bigint, bigint, Hex];
       return { ok: true, amountIn: ain, amountOut: aout };
     } catch (e) {
@@ -71,10 +102,10 @@ export function createAegisClient(dep: Deployment) {
     }
   }
 
-  async function swap(p: Profile, amountIn: bigint): Promise<SwapResult> {
-    const q = await quote(p, amountIn);
+  async function swap(p: Profile, amountIn: bigint, dataOverride?: Hex): Promise<SwapResult> {
+    const q = await quote(p, amountIn, dataOverride);
     const hash = await wallet.writeContract({
-      ...R, functionName: "swap", args: [dep.order, amountIn, dataOf(p)], account: takerOf(p), chain, gas: 2_000_000n,
+      ...R, functionName: "swap", args: [dep.order, amountIn, dataOverride ?? dataOf(p)], account: takerOf(p), chain, gas: 3_000_000n,
     });
     const rc = await pub.waitForTransactionReceipt({ hash });
     if (rc.status !== "success") return { quote: q, hash, gasUsed: rc.gasUsed, reverted: true };
@@ -130,7 +161,56 @@ export function createAegisClient(dep: Deployment) {
     return (await pub.request({ method: "evm_revert" as any, params: [id] as any })) as boolean;
   }
 
-  return { pub, fetchLiveOrder, quote, swap, splitAttack, readState, snapshot, revert, takerOf };
+  // ------------------------------------------------------------------ ZK
+  const A = { address: dep.addr.adapter, abi: dep.abi.adapter } as const;
+  async function currentNullifierSeed(): Promise<bigint> {
+    return (await pub.readContract({ ...A, functionName: "currentNullifierSeed", args: [] })) as bigint;
+  }
+  async function currentEpoch(): Promise<bigint> {
+    return (await pub.readContract({ ...A, functionName: "currentEpoch", args: [] })) as bigint;
+  }
+  /** Runs the adapter (and the real BN254 pairing) in an eth_call */
+  async function verifyOnChain(taker: Address, r: ProverResult): Promise<{ ok: boolean; beneficiary: Address }> {
+    const ps = r.proof.publicSignals;
+    const [ok, beneficiary] = (await pub.readContract({
+      ...A, functionName: "verifyProof",
+      args: [taker, BigInt(ps.nullifier), [BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state)], proofEnvelope(r)],
+    })) as [boolean, Address];
+    return { ok, beneficiary };
+  }
+  /** takerData for the human profile carrying a fresh real proof */
+  function realProofTakerData(r: ProverResult): Hex {
+    const payload = encodeZkPayload(r);
+    if (size(payload) !== dep.zk.payloadLength) throw new Error(`unexpected ZK payload length ${size(payload)}`);
+    return `${dep.zk.takerHeader}${payload.slice(2)}` as Hex;
+  }
+  async function prove(digits: string, signal: Address): Promise<ProverResult> {
+    const seed = await currentNullifierSeed();
+    const res = await fetch(`${dep.zk.proverUrl}/prove`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ digits, seed: seed.toString(), signal }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
+    return j;
+  }
+  async function testQr(): Promise<{ digits: string; png: string }> {
+    const block = await pub.getBlock();
+    const res = await fetch(`${dep.zk.proverUrl}/test-qr`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ timestamp: Number(block.timestamp) }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
+    return j;
+  }
+  async function proverHealth(): Promise<{ ok: boolean; artifacts: boolean } | null> {
+    try { return await (await fetch(`${dep.zk.proverUrl}/health`)).json(); } catch { return null; }
+  }
+
+  return {
+    pub, fetchLiveOrder, quote, swap, splitAttack, readState, snapshot, revert, takerOf,
+    currentNullifierSeed, currentEpoch, verifyOnChain, realProofTakerData, prove, testQr, proverHealth,
+  };
 }
 
 export type AegisClient = ReturnType<typeof createAegisClient>;

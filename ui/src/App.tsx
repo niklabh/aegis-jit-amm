@@ -6,6 +6,7 @@ import {
   type AegisClient, type ChainState, type Deployment, type Frame, type FrameKind, type Order, type Profile,
   type QuoteResult, type SplitResult,
 } from "./lib/aegis";
+import { ZkPass, type AttachedProof } from "./ZkPass";
 
 const KIND_STYLE: Record<FrameKind, { chip: string; text: string; ring: string; label: string }> = {
   zk: { chip: "bg-emerald-500/15 border-emerald-500/50", text: "text-emerald-300", ring: "ring-emerald-400", label: "0x2A ZK guard" },
@@ -55,6 +56,7 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
   const [rpcErr, setRpcErr] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<Hex | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [attached, setAttached] = useState<AttachedProof | null>(null);
 
   const refresh = useCallback(async () => {
     try { setState(await client.readState()); setRpcErr(null); } catch (e: any) { setRpcErr(e.shortMessage ?? String(e)); }
@@ -92,9 +94,10 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
       </header>
 
       <main className="grid grid-cols-1 xl:grid-cols-2 gap-6 p-6">
-        {order ? <Disassembler dep={dep} order={order} shipTx={shipTx} /> : <Card title="SwapVM bytecode"><p className="text-slate-500 text-sm">Fetching order from Aqua Shipped event…</p></Card>}
+        {order ? <Disassembler dep={dep} order={order} shipTx={shipTx} zk={attached} /> : <Card title="SwapVM bytecode"><p className="text-slate-500 text-sm">Fetching order from Aqua Shipped event…</p></Card>}
         <div className="flex flex-col gap-6">
-          <Simulator dep={dep} client={client} state={state} onDone={async (e) => { setLog((l) => [...e, ...l]); await refresh(); }} />
+          <ZkPass dep={dep} client={client} attached={attached} onAttach={setAttached} />
+          <Simulator dep={dep} client={client} state={state} humanData={attached?.data} onDone={async (e) => { setLog((l) => [...e, ...l]); await refresh(); }} />
           {state && <VaultPanel dep={dep} state={state} />}
           <ActivityLog log={log} />
         </div>
@@ -116,7 +119,7 @@ function Card({ title, right, children }: { title: string; right?: React.ReactNo
 }
 
 // ------------------------------------------------------------------ disassembler
-function Disassembler({ dep, order, shipTx }: { dep: Deployment; order: Order; shipTx: Hex | null }) {
+function Disassembler({ dep, order, shipTx, zk }: { dep: Deployment; order: Order; shipTx: Hex | null; zk: AttachedProof | null }) {
   const { sections, program, programOffset } = useMemo(() => splitOrder(order), [order]);
   const tokenA = (BigInt(dep.addr.usdc) < BigInt(dep.addr.weth) ? dep.addr.usdc : dep.addr.weth);
   const frames = useMemo(() => disassemble(program, { tokenA, usdc: dep.addr.usdc }), [program, tokenA, dep.addr.usdc]);
@@ -161,6 +164,11 @@ function Disassembler({ dep, order, shipTx }: { dep: Deployment; order: Order; s
                 <span className="text-slate-500 text-xs w-5">[{i}]</span>
                 <code className={`font-bold ${st.text}`}>0x{f.opcode.toString(16).padStart(2, "0")}</code>
                 <span className="font-medium text-slate-100">{f.name}</span>
+                {f.kind === "zk" && (
+                  <span className={`text-[11px] px-2 py-0.5 rounded border ${zk?.verified ? "border-emerald-500 text-emerald-200 bg-emerald-500/20" : "border-slate-700 text-slate-400"}`}>
+                    {zk?.verified ? "PASSED (Real Groth16 verified · ecPairing 0x08)" : "awaiting proof → unverified takers priced as bots"}
+                  </span>
+                )}
                 <span className="ml-auto text-[11px] text-slate-500">pc {f.pc} · {f.hex.length / 2 - 3} B args</span>
               </div>
               {f.fields.length > 0 && (
@@ -179,7 +187,7 @@ function Disassembler({ dep, order, shipTx }: { dep: Deployment; order: Order; s
 }
 
 // ------------------------------------------------------------------ simulator
-function Simulator({ dep, client, state, onDone }: { dep: Deployment; client: AegisClient; state: ChainState | null; onDone: (e: LogEntry[]) => Promise<void> }) {
+function Simulator({ dep, client, state, humanData, onDone }: { dep: Deployment; client: AegisClient; state: ChainState | null; humanData?: Hex; onDone: (e: LogEntry[]) => Promise<void> }) {
   const [profile, setProfile] = useState<Profile>("human");
   const [amount, setAmount] = useState(PROFILES.human.amount);
   const [q, setQ] = useState<QuoteResult | null>(null);
@@ -190,17 +198,19 @@ function Simulator({ dep, client, state, onDone }: { dep: Deployment; client: Ae
 
   const amountIn = BigInt(amount) * 10n ** 6n;
   const human = profile === "human";
+  const override = human ? humanData : undefined;
 
   useEffect(() => {
     const id = ++reqId.current;
     const t = setTimeout(async () => {
-      const r = await client.quote(profile === "split" ? "bot" : profile, amountIn);
+      const r = await client.quote(profile === "split" ? "bot" : profile, amountIn, override);
       if (id === reqId.current) setQ(r);
     }, 120);
     return () => clearTimeout(t);
-  }, [client, profile, amountIn, state?.blockNumber]);
+  }, [client, profile, amountIn, state?.blockNumber, override]);
 
   const model = state ? feeModel(dep, state, amountIn, human) : null;
+  const botModel = state && human ? feeModel(dep, state, amountIn, false) : null;
   const modelOk = q?.ok && model ? q.amountOut === model.expectedOut : undefined;
 
   const pick = (p: Profile) => { setProfile(p); setAmount(PROFILES[p].amount); setLast(null); setSplit(null); };
@@ -208,7 +218,7 @@ function Simulator({ dep, client, state, onDone }: { dep: Deployment; client: Ae
   const execute = async () => {
     setBusy(true); setLast(null);
     try {
-      const s = await client.swap(profile, amountIn);
+      const s = await client.swap(profile, amountIn, override);
       const quoteOut = s.quote.ok ? s.quote.amountOut : undefined;
       const note = s.reverted ? (s.quote.ok ? "reverted" : `reverted: ${s.quote.error}`) : undefined;
       setLast({ quoteOut, actualOut: s.amountOut, hash: s.hash, note });
@@ -240,6 +250,11 @@ function Simulator({ dep, client, state, onDone }: { dep: Deployment; client: Ae
         ))}
       </div>
 
+      {human && (
+        <p className={`text-[11px] mb-2 ${humanData ? "text-emerald-300" : "text-slate-500"}`}>
+          {humanData ? "✔ Using the real Groth16 proof from the Aadhaar ZK Pass" : "Using the seeded real Groth16 proof (attach a fresh one from the ZK Pass above)"}
+        </p>
+      )}
       <label className="flex items-center justify-between text-xs text-slate-400 mb-1">
         <span>Amount in</span><span className="font-mono text-slate-100 text-sm">{amount.toLocaleString()} USDC{profile === "split" ? ` = 5 × ${(amount / 5).toLocaleString()}` : ""}</span>
       </label>
@@ -251,7 +266,8 @@ function Simulator({ dep, client, state, onDone }: { dep: Deployment; client: Ae
           sub={q && !q.ok ? q.error.replace(/\((\d+), (\d+)\)/, (_, a, b) => `(${weth(BigInt(a), 2)}, cap ${weth(BigInt(b), 2)} WETH)`) : q?.ok ? `${usdc(amountIn * 10n ** 18n / q.amountOut)} USDC/WETH` : ""}
           tone={q && !q.ok ? "bad" : undefined} />
         <Stat label="Effective 0x7A fee" value={model ? bps(model.total, amountIn) : "…"}
-          sub={model ? `${usdc(model.base)} base + ${usdc(model.surge)} surge USDC` : ""} tone={model && model.surge > 0n ? "warn" : undefined} />
+          sub={model ? `${usdc(model.base)} base + ${usdc(model.surge)} surge USDC${botModel ? ` · unverified bot: ${bps(botModel.total, amountIn)}` : ""}` : ""}
+          tone={model && model.surge > 0n ? "warn" : human ? "good" : undefined} />
         <Stat label="Off-chain model vs chain" value={modelOk === undefined ? "—" : modelOk ? "match ✔" : "mismatch"} sub="independent TS mirror of 0x9A+0x7A+XYC" tone={modelOk === false ? "bad" : "good"} />
       </div>
 

@@ -14,7 +14,8 @@
     "certs:embed": "node scripts/embed-uidai-certs.mjs",
     "demo:generate": "node scripts/make-demo.mjs",
     "prover:fetch": "node prover/fetch-artifacts.mjs",
-    "prover:e2e": "tsx prover/cli.ts e2e"
+    "prover:e2e": "tsx prover/cli.ts e2e",
+    "prover:serve": "tsx prover/server.ts"
   },
   "engines": {
     "node": ">=20.9"

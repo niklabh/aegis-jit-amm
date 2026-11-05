@@ -4,16 +4,24 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { deployAegis } from "../test/utils/aegisFixture";
+import { deployAegis, MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH } from "../test/utils/aegisFixture";
 
 const hre = require("hardhat");
 const { ethers } = hre;
 
 async function main() {
-  const env = await deployAegis({ zkBackend: "anonAadhaar" });
+  // Real BN254 Groth16 verification; nullifier seed rotates every 24 h
+  const EPOCH = 24 * 3600;
+  const env = await deployAegis({ zkBackend: "groth16", epochDuration: EPOCH });
   const { maker, human, bot, whale } = env.accounts;
   const humanAddr = await human.getAddress();
+  console.log("Generating a real Groth16 proof for the default 'Verified Human' profile (~15 s)…");
   const zk = await env.zkArgs(humanAddr);
+  const humanData = env.takerData({ tokenIn: env.addr.usdc, zk });
+  // takerTraits header (22 B) for any 450-byte ZK payload: the UI appends a fresh proof to it
+  const zkLen = ethers.getBytes(zk).length;
+  const header = ethers.dataSlice(humanData, 0, 22);
+  if (ethers.concat([header, zk]) !== humanData) throw new Error("takerData header layout changed");
 
   const abi = async (name: string) => (await hre.artifacts.readArtifact(name)).abi;
   const cfg = Object.fromEntries(Object.entries(env.cfg).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v]));
@@ -33,8 +41,16 @@ async function main() {
       whale: await whale.getAddress(),
     },
     // USDC -> WETH exactIn taker data per profile (amount-independent)
+    zk: {
+      proverUrl: "http://127.0.0.1:8547",
+      epochDuration: EPOCH,
+      payloadLength: zkLen,
+      takerHeader: header,
+      trustRoot: TEST_SIGNER_PUBKEY_HASH.toString(),
+      maharashtraPacked: MAHARASHTRA_PACKED.toString(),
+    },
     takerData: {
-      human: env.takerData({ tokenIn: env.addr.usdc, zk }),
+      human: humanData,
       bot: env.takerData({ tokenIn: env.addr.usdc }),
       whale: env.takerData({ tokenIn: env.addr.usdc }),
     },
@@ -42,6 +58,7 @@ async function main() {
       router: await abi("AegisSwapVMRouter"),
       vault: await abi("MockERC4626Vault"),
       aqua: await abi("Aqua"),
+      adapter: await abi("AnonAadhaarAdapter"),
     },
   };
 

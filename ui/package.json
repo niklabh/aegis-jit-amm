@@ -8,12 +8,16 @@
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "predev": "node scripts/copy-wasm.mjs",
+    "prebuild": "node scripts/copy-wasm.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "viem": "2.21.54"
+    "viem": "2.21.54",
+    "pako": "3.0.3",
+    "zxing-wasm": "3.1.6"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.11",
@@ -22,7 +26,7 @@
     "@vitejs/plugin-react": "4.3.4",
     "tailwindcss": "4.1.11",
     "tsx": "4.19.2",
-    "typescript": "5.6.3",
+    "typescript": "5.9.3",
     "vite": "5.4.11"
   }
 }

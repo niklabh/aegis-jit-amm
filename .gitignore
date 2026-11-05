@@ -49,3 +49,4 @@ cache-forge/
 *.pdf
 private/
 .cache/
+.prover.log
