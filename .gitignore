@@ -39,3 +39,7 @@ lerna-debug.log*
 deployments/localhost/
 deployments/hardhat/
 
+
+# Foundry
+out-forge/
+cache-forge/
