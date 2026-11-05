@@ -9,6 +9,6 @@
     "resolveJsonModule": true,
     "types": []
   },
-  "include": ["hardhat.config.ts", "test/**/*.ts", "deploy/**/*.ts"],
+  "include": ["hardhat.config.ts", "test/**/*.ts", "deploy/**/*.ts", "src/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules"]
 }

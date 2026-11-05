@@ -47,6 +47,18 @@ const config: HardhatUserConfig = {
         }
       }
     ],
+    overrides: {
+      // The router adds 3 instructions on top of AquaSwapVMRouter (already ~24.3KB with the
+      // minimal Yul step sequence above). The full default Yul optimizer keeps it < 24KB (EIP-170).
+      "contracts/AegisSwapVMRouter.sol": {
+        version: "0.8.30",
+        settings: {
+          optimizer: { enabled: true, runs: 1 },
+          evmVersion: "cancun",
+          viaIR: true
+        }
+      }
+    }
   },
   dependencyCompiler: {
     paths: [
@@ -54,7 +66,8 @@ const config: HardhatUserConfig = {
       "@1inch/swap-vm/src/routers/AquaSwapVMRouter.sol",
       "@1inch/swap-vm/src/routers/SwapVMRouter.sol",
       "@1inch/swap-vm/test/mocks/WETHMock.sol",
-      "@1inch/solidity-utils/contracts/mocks/TokenMock.sol"
+      "@1inch/solidity-utils/contracts/mocks/TokenMock.sol",
+      "@1inch/solidity-utils/contracts/mocks/TokenCustomDecimalsMock.sol"
     ]
   },
   typechain: {
