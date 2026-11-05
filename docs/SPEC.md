@@ -142,6 +142,29 @@ returns exactly 32 bytes `true`, `revealArray[0] == 1`, and the state code match
   pure in-memory change of the VM's own dispatcher, scoped to this execution, valid in
   static context, and requires no storage.
 
+**Nullifier binding (anti-Sybil).** After a successful proof check, 0x2A looks up
+`nullifierTaker[verifier][nullifier]`. If it is unbound, the first **swap** binds it to
+`ctx.query.taker` (written only when `!isStaticContext`). If it is bound to a different
+taker, the taker is treated as unverified. One Aadhaar identity therefore gets one
+discounted address.
+
+**Production verifier: `contracts/zk/AnonAadhaarAdapter.sol`.** It implements `IZKVerifier`
+over the deployed Anon Aadhaar contract:
+`verifyAnonAadhaarProof(nullifierSeed, nullifier, timestamp, signal, revealArray, groth16Proof)`.
+- `proof` bytes = `abi.encode(uint256 timestamp, uint256[8] groth16Proof)` (288 B).
+- `signal = uint256(uint160(taker))`: a searcher replaying takerData from another address fails.
+- Freshness: `0 <= block.timestamp − timestamp <= MAX_PROOF_AGE` (default 24 h).
+- `revealArray[0] == 1`. `revealArray[3]` must equal `REQUIRED_STATE` if that is set; this is
+  full-width because the circuit emits state as a packed string, which does not fit 0x2A's
+  `uint32`. (Anon Aadhaar order is `[ageAbove18, gender, pincode, state]`, so state is index 3.)
+- App scoping via the immutable `NULLIFIER_SEED`. The adapter never reverts; it returns false.
+- Caveat: `taker` is `msg.sender` of `swap()`. If a taker routes through an intermediary
+  contract (aggregator or resolver), the proof must be bound to that contract's address.
+
+`MockGroth16AnonAadhaar` is a test double with the same ABI. It models SNARK soundness: a
+proof verifies only for the exact public signals it was registered for.
+`MockAnonIdentityVerifier` (ECDSA attestation) remains for the main invariant suite.
+
 ### 5.2 `0x9A JITVaultReserves` — 82 bytes
 | Offset | Size | Field | Meaning |
 |-------:|-----:|-------|---------|

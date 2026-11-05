@@ -21,6 +21,8 @@ import type {
   AegisJITVaultHook,
   AegisJITStrategy,
   MockAnonIdentityVerifier,
+  MockGroth16AnonAadhaar,
+  AnonAadhaarAdapter,
   MockERC4626Vault,
   StaticQuoter,
   TokenCustomDecimalsMock,
@@ -32,9 +34,15 @@ const { ethers } = require("hardhat");
 export const USDC = (n: number | bigint | string) => ethers.parseUnits(n.toString(), 6) as bigint;
 export const WETH = (n: number | bigint | string) => ethers.parseUnits(n.toString(), 18) as bigint;
 
-/** Anon-Aadhaar style reveal: [ageAbove18, gender, pincode, state]. 27 = Maharashtra (GST state code). */
+/**
+ * Anon-Aadhaar reveal: [ageAbove18, gender, pincode, state]; 0 = not revealed.
+ * Minimal disclosure by default: only ageAbove18 and state (27 = Maharashtra GST code in the
+ * mock backends; the real Anon Aadhaar circuit emits the state as a packed string).
+ */
 export type RevealArray = [bigint, bigint, bigint, bigint];
-export const MUMBAI_HUMAN_REVEAL: RevealArray = [1n, 77n, 400001n, 27n];
+export const MUMBAI_HUMAN_REVEAL: RevealArray = [1n, 0n, 0n, 27n];
+/** App-scoped nullifier seed for the Anon Aadhaar adapter */
+export const AEGIS_NULLIFIER_SEED = BigInt(ethers.id("aegis-jit/anon-aadhaar/nullifier-seed")) >> 8n;
 export const MAHARASHTRA = 27;
 
 export interface AegisConfig {
@@ -55,6 +63,10 @@ export interface AegisConfig {
   maxBuyPriceUsdc: number;
   useVaults: boolean;
   salt: bigint;
+  /** "ecdsa" = MockAnonIdentityVerifier; "anonAadhaar" = AnonAadhaarAdapter over MockGroth16AnonAadhaar */
+  zkBackend: "ecdsa" | "anonAadhaar";
+  maxProofAge: number;
+  adapterRequiredState: bigint;
 }
 
 export const DEFAULT_CONFIG: AegisConfig = {
@@ -73,6 +85,9 @@ export const DEFAULT_CONFIG: AegisConfig = {
   maxBuyPriceUsdc: 3_000,
   useVaults: true,
   salt: 0n,
+  zkBackend: "ecdsa",
+  maxProofAge: 24 * 3600,
+  adapterRequiredState: 0n,
 };
 
 export interface SwapResult {
@@ -103,6 +118,10 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   const hook = await deploy<AegisJITVaultHook>("AegisJITVaultHook", [await router.getAddress()]);
   const strategy = await deploy<AegisJITStrategy>("AegisJITStrategy");
   const verifier = await deploy<MockAnonIdentityVerifier>("MockAnonIdentityVerifier", [issuer.address]);
+  const anonAadhaar = await deploy<MockGroth16AnonAadhaar>("MockGroth16AnonAadhaar", [await deployer.getAddress()]);
+  const adapter = await deploy<AnonAadhaarAdapter>("AnonAadhaarAdapter", [
+    await anonAadhaar.getAddress(), AEGIS_NULLIFIER_SEED, cfg.maxProofAge, cfg.adapterRequiredState,
+  ]);
   const usdcVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await usdc.getAddress(), "Aegis USDC Vault", "avUSDC"]);
   const wethVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await weth.getAddress(), "Aegis WETH Vault", "avWETH"]);
   const quoter = await deploy<StaticQuoter>("StaticQuoter");
@@ -116,6 +135,9 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     usdcVault: await usdcVault.getAddress(),
     wethVault: await wethVault.getAddress(),
     verifier: await verifier.getAddress(),
+    anonAadhaar: await anonAadhaar.getAddress(),
+    adapter: await adapter.getAddress(),
+    zkVerifier: cfg.zkBackend === "anonAadhaar" ? await adapter.getAddress() : await verifier.getAddress(),
     maker: await maker.getAddress(),
   };
   const tokenA = BigInt(addr.usdc) < BigInt(addr.weth) ? addr.usdc : addr.weth;
@@ -146,7 +168,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     vault1: cfg.useVaults ? addr.wethVault : ethers.ZeroAddress,
     jitHook: cfg.useVaults ? addr.hook : ethers.ZeroAddress,
     deadline: BigInt(latest!.timestamp + 30 * 24 * 3600),
-    zkVerifier: addr.verifier,
+    zkVerifier: addr.zkVerifier,
     zkMode: cfg.zkMode,
     requiredStateCode: cfg.requiredStateCode,
     lambdaBps: cfg.lambdaBps,
@@ -185,10 +207,30 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
 
   const chainId: bigint = (await ethers.provider.getNetwork()).chainId;
 
-  /** Issuer-signed identity proof bound to `taker`, encoded as taker instruction args for 0x2A. */
-  async function zkArgs(taker: string, reveal: RevealArray = MUMBAI_HUMAN_REVEAL, nullifier = 0xa11ce5n): Promise<string> {
-    const hash = zkAttestationHash(chainId, addr.verifier, taker, nullifier, reveal);
-    const proof = await issuer.signMessage(ethers.getBytes(hash));
+  /**
+   * Identity proof bound to `taker`, encoded as taker instruction args for 0x2A.
+   *  - ecdsa backend: issuer-signed attestation
+   *  - anonAadhaar backend: Groth16-shaped proof `abi.encode(timestamp, uint256[8])`, registered
+   *    with the mock verifier for exactly (seed, nullifier, timestamp, signal = uint160(taker), reveal)
+   */
+  async function zkArgs(
+    taker: string,
+    reveal: RevealArray = MUMBAI_HUMAN_REVEAL,
+    nullifier = 0xa11ce5n,
+    opts: { timestamp?: bigint } = {},
+  ): Promise<string> {
+    if (cfg.zkBackend === "ecdsa") {
+      const hash = zkAttestationHash(chainId, addr.verifier, taker, nullifier, reveal);
+      const proof = await issuer.signMessage(ethers.getBytes(hash));
+      return encodeZKTakerArgs(nullifier, reveal, proof);
+    }
+    const timestamp = opts.timestamp ?? BigInt((await ethers.provider.getBlock("latest"))!.timestamp);
+    const signal = BigInt(taker);
+    const groth16 = Array.from({ length: 8 }, (_, i) =>
+      BigInt(ethers.solidityPackedKeccak256(["uint256", "uint256", "uint256", "uint256"], [signal, nullifier, timestamp, i])),
+    ) as unknown as bigint[];
+    await (await anonAadhaar.connect(deployer).registerProof(AEGIS_NULLIFIER_SEED, nullifier, timestamp, signal, reveal, groth16)).wait();
+    const proof = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256[8]"], [timestamp, groth16]);
     return encodeZKTakerArgs(nullifier, reveal, proof);
   }
 
@@ -233,7 +275,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   return {
     cfg, params, order, orderHash, shipReceipt, chainId, issuer,
     accounts: { deployer, maker, human, bot, whale },
-    contracts: { aqua, weth, usdc, router, hook, strategy, verifier, usdcVault, wethVault, quoter },
+    contracts: { aqua, weth, usdc, router, hook, strategy, verifier, anonAadhaar, adapter, usdcVault, wethVault, quoter },
     addr, tokenA,
     zkArgs, takerData, quote, swap, vaultAssets, aquaBalances,
   };
