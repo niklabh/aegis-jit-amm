@@ -180,15 +180,36 @@ the verified-human dispatcher makes the tier tests fail.
     SwapVM. SwapVM-1.1 is a source-available copyleft licence with commercial triggers, not
     an OSI-approved open-source licence. Judges should weigh that.
 
-**Privacy**
+**Privacy — epoch-rotating nullifiers**
 - No name, Aadhaar number, photo or address goes on-chain. Calldata carries:
-  - `ageAbove18`; `state` only if the order requires it (default reveal `[1, 0, 0, state]`,
-    with gender and pincode left at 0);
+  - `ageAbove18`; `state` only if the order requires it (gender and pincode stay 0);
   - the proof timestamp and the Groth16 proof;
-  - `signal`, which is the taker address and already public.
-- Trade-off: the **nullifier** is a stable pseudonym per app (fixed `NULLIFIER_SEED`). Every
-  verified trade by the same person is linkable, and binding pins it to one address. That is
-  the cost of Sybil resistance.
+  - `signal`, which is the beneficiary address and already public;
+  - one **nullifier per epoch**.
+- **Unlinkability across epochs.** In Anon Aadhaar the nullifier is
+  `Poseidon(nullifierSeed, photo)`, with `nullifierSeed` as a public circuit input.
+  `AnonAadhaarAdapter` requires `nullifierSeed = keccak256(APP_SEED, ⌊block.timestamp / EPOCH⌋) mod p`.
+  So the same person shows a **different, unlinkable nullifier every epoch**. This is verified
+  with real proofs of the same QR in two epochs (`test/EpochNullifiers.test.ts`). The adapter
+  rejects any other seed, so a client can't opt into a stable pseudonym.
+- **Sybil-bound within an epoch.** 0x2A binds `nullifier → beneficiary` on first swap, giving one
+  discounted address per human per epoch. In the next epoch the human can use a fresh wallet.
+  Because the nullifier changed, nothing on-chain ties it to the previous wallet.
+- **What rotation does *not* hide:**
+  - trades by the same wallet (they share an address);
+  - funding flows between a user's wallets;
+  - all verified trades within one epoch (they share a nullifier).
+
+  Shorter epochs mean less linkability but more frequent re-proving (~13 s per proof in Node).
+
+**Relayers / aggregators**
+- `AnonAadhaarAdapter` accepts a forwarded envelope `(timestamp, recipient, proof)`. The signal
+  must equal `recipient`, and this is only honoured when the taker is a forwarder fixed in the
+  adapter's constructor (no admin, no setters). The nullifier binds to `recipient`, so a shared
+  aggregator can't be used to farm discounts.
+- Reference forwarder `AegisZKForwarder` requires `recipient == msg.sender`, sends the output to
+  `msg.sender`, and pulls the input from `msg.sender`. A searcher replaying someone's forwarder
+  calldata is reverted. A non-whitelisted relayer simply gets bot pricing.
 
 **Security**
 - Mempool hijack: a proof copied into a searcher's own transaction fails the
@@ -286,7 +307,7 @@ calls or interfaces with SwapVM.
 
 | Licence | Files | Why |
 |---|---|---|
-| `LicenseRef-Degensoft-SwapVM-1.1` | `contracts/AegisSwapVMRouter.sol`, `contracts/instructions/*`, `contracts/AegisJITStrategy.sol`, `contracts/libs/AegisOpcodes.sol`, `test/foundry/SurgeFeeMath.t.sol` | Inherit or import SwapVM implementation code (`SwapVM`, `AquaOpcodes`, `ContextLib`, `MinRate`, arg builders) and are compiled into the router runtime |
+| `LicenseRef-Degensoft-SwapVM-1.1` | `contracts/AegisSwapVMRouter.sol`, `contracts/instructions/*`, `contracts/AegisJITStrategy.sol`, `contracts/AegisZKForwarder.sol` (uses `TakerTraitsLib`), `contracts/libs/AegisOpcodes.sol`, `test/foundry/SurgeFeeMath.t.sol` | Inherit or import SwapVM implementation code (`SwapVM`, `AquaOpcodes`, `ContextLib`, `MinRate`, arg builders) and are compiled into the router runtime |
 | `LicenseRef-Degensoft-SwapVM-1.1` | `src/aegisProgramBuilder.ts`, `test/utils/aegisFixture.ts` | Import the swap-vm-template helper `test/utils/SwapVMHelpers.ts` |
 | `LicenseRef-Degensoft-SwapVM-1.1` (unchanged template files) | `AquaAMM.sol`, `MockTaker.sol`, `deploy/`, `test/AquaAMM.test.ts`, `test/utils/{fixtures,ProgramBuilder,SwapVMHelpers}.ts` | Original swap-vm-template |
 | `GPL-3.0` (unmodified vendor) | `contracts/zk/vendor/anon-aadhaar/Verifier.sol` | snarkjs-generated Groth16 verifier from Anon Aadhaar v2; deployed separately and called via an independently written interface |

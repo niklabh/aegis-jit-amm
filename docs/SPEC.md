@@ -161,6 +161,19 @@ over the deployed Anon Aadhaar contract:
 - Caveat: `taker` is `msg.sender` of `swap()`. If a taker routes through an intermediary
   contract (aggregator or resolver), the proof must be bound to that contract's address.
 
+**Epoch-rotating nullifiers.** `AnonAadhaarAdapter(…, epochDuration, …)` requires the proof's
+`nullifierSeed = uint256(keccak256(abi.encode(APP_SEED, epoch))) % p`, where
+`epoch = block.timestamp / epochDuration` (`epochDuration = 0` means a static `APP_SEED`). The
+circuit computes `nullifier = Poseidon(nullifierSeed, photo)`, so the nullifier rotates every epoch.
+0x2A's binding stays keyed by nullifier, which makes it "one beneficiary per human per epoch".
+Keying a binding map by epoch while keeping a static nullifier would let a user switch wallets,
+but every wallet would still be publicly linked through the same nullifier in calldata.
+
+**Forwarders.** `IZKVerifier.verifyProof` returns `(bool ok, address beneficiary)`, and 0x2A binds
+the nullifier to the beneficiary. The adapter's 320-byte envelope `(timestamp, recipient, uint256[8])`
+binds `signal = recipient`, and is only accepted when `taker` is a constructor-whitelisted
+forwarder. `AegisZKForwarder` enforces `recipient == msg.sender` and `to == msg.sender`.
+
 `MockGroth16AnonAadhaar` is a test double with the same ABI. It models SNARK soundness: a
 proof verifies only for the exact public signals it was registered for.
 `MockAnonIdentityVerifier` (ECDSA attestation) remains for the main invariant suite.

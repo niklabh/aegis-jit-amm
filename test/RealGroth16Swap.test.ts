@@ -78,8 +78,8 @@ describe("Real Groth16 (BN254) Anon Aadhaar proof -> AegisJIT swap", function ()
     const bot = await env.accounts.bot.getAddress();
 
     expect(await groth16.verifyAnonAadhaarProof(AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, BigInt(human), a.reveal, a.words)).to.equal(true);
-    expect(await adapter.verifyProof(human, a.nullifier, a.reveal, a.proof)).to.equal(true);
-    expect(await adapter.verifyProof(bot, a.nullifier, a.reveal, a.proof)).to.equal(false);   // signal mismatch
+    expect((await adapter.verifyProof(human, a.nullifier, a.reveal, a.proof))[0]).to.equal(true);
+    expect((await adapter.verifyProof(bot, a.nullifier, a.reveal, a.proof))[0]).to.equal(false);   // signal mismatch
 
     const tampered = [...a.words]; tampered[7] ^= 1n;
     expect(await groth16.verifyAnonAadhaarProof(AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, BigInt(human), a.reveal, tampered)).to.equal(false);

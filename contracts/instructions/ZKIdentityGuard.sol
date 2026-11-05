@@ -57,9 +57,11 @@ library ZKIdentityGuardArgsBuilder {
 /// @dev On success it calls `_onVerifiedHuman(ctx)`, which the router implements by switching
 ///      `ctx.vm.dispatch` to a dispatcher that routes the fee opcode with `verifiedHuman = true`.
 ///      Nullifier binding (anti-Sybil): the first successful *swap* binds the proof's nullifier
-///      (per verifier) to its taker. A later proof with the same nullifier but a different taker
-///      is treated as unverified, so one human cannot farm the discount across many bot
-///      addresses. The binding is read in `quote()` and written only when
+///      (per verifier) to the proof's beneficiary (the taker, or the end user behind a trusted
+///      forwarder). A later proof with the same nullifier but a different beneficiary is treated
+///      as unverified, so one human cannot farm the discount across many bot addresses. With an
+///      epoch-rotating verifier (AnonAadhaarAdapter) the nullifier itself changes every epoch,
+///      so this is "one address per human per epoch" with no cross-epoch linkage. The binding is read in `quote()` and written only when
 ///      `!ctx.vm.isStaticContext`, after verification, so `quote()` stays STATICCALL-safe and
 ///      equal to `swap()`.
 abstract contract ZKIdentityGuard {
@@ -68,10 +70,10 @@ abstract contract ZKIdentityGuard {
 
     error ZKVerificationFailed();
 
-    event NullifierBound(address indexed verifier, uint256 indexed nullifier, address indexed taker);
+    event NullifierBound(address indexed verifier, uint256 indexed nullifier, address indexed beneficiary);
 
-    /// @notice verifier => nullifier => taker the nullifier was first used by (0 = unbound)
-    mapping(address verifier => mapping(uint256 nullifier => address taker)) public nullifierTaker;
+    /// @notice verifier => nullifier => beneficiary the nullifier was first used by (0 = unbound)
+    mapping(address verifier => mapping(uint256 nullifier => address beneficiary)) public nullifierTaker;
 
     uint256 private constant _AGE_ABOVE_18_INDEX = 0;
     uint256 private constant _STATE_INDEX = 3;
@@ -85,17 +87,17 @@ abstract contract ZKIdentityGuard {
     function _execZKIdentityGuard(Context memory ctx, bytes calldata args) internal {
         (address verifier, uint8 mode, uint32 requiredStateCode) = ZKIdentityGuardArgsBuilder.parse(args);
 
-        (bool verified, uint256 nullifier) = _verifyTakerProof(ctx, verifier, requiredStateCode);
+        (bool verified, uint256 nullifier, address beneficiary) = _verifyTakerProof(ctx, verifier, requiredStateCode);
 
         if (verified) {
             address bound = nullifierTaker[verifier][nullifier];
             if (bound == address(0)) {
                 if (!ctx.vm.isStaticContext) {
-                    nullifierTaker[verifier][nullifier] = ctx.query.taker;
-                    emit NullifierBound(verifier, nullifier, ctx.query.taker);
+                    nullifierTaker[verifier][nullifier] = beneficiary;
+                    emit NullifierBound(verifier, nullifier, beneficiary);
                 }
-            } else if (bound != ctx.query.taker) {
-                verified = false; // nullifier already belongs to another address
+            } else if (bound != beneficiary) {
+                verified = false; // nullifier already belongs to another address (this epoch)
             }
         }
 
@@ -107,15 +109,15 @@ abstract contract ZKIdentityGuard {
         // MODE_TIERED + not verified: continue as an unverified (bot) taker.
     }
 
-    function _verifyTakerProof(Context memory ctx, address verifier, uint32 requiredStateCode) private view returns (bool, uint256) {
+    function _verifyTakerProof(Context memory ctx, address verifier, uint32 requiredStateCode) private view returns (bool, uint256, address) {
         // Always consume the proof payload (if any) so later instructions see their own args.
         bytes calldata lengthPrefix = ctx.tryChopTakerArgs(2);
-        if (lengthPrefix.length < 2) return (false, 0);
+        if (lengthPrefix.length < 2) return (false, 0, address(0));
         uint256 payloadLength = uint16(bytes2(lengthPrefix));
 
         bytes calldata payload = ctx.tryChopTakerArgs(payloadLength);
-        if (payload.length != payloadLength || payloadLength < ZKIdentityGuardArgsBuilder.PUBLIC_INPUTS_LENGTH) return (false, 0);
-        if (verifier.code.length == 0) return (false, 0);
+        if (payload.length != payloadLength || payloadLength < ZKIdentityGuardArgsBuilder.PUBLIC_INPUTS_LENGTH) return (false, 0, address(0));
+        if (verifier.code.length == 0) return (false, 0, address(0));
 
         uint256 nullifier = uint256(bytes32(payload.slice(0, 32)));
         uint256[4] memory revealArray;
@@ -125,12 +127,16 @@ abstract contract ZKIdentityGuard {
         bytes calldata proof = payload.slice(ZKIdentityGuardArgsBuilder.PUBLIC_INPUTS_LENGTH);
 
         // Public-input policy checks (cheap) before the proof check (expensive).
-        if (revealArray[_AGE_ABOVE_18_INDEX] != 1) return (false, nullifier);
-        if (requiredStateCode != 0 && revealArray[_STATE_INDEX] != requiredStateCode) return (false, nullifier);
+        if (revealArray[_AGE_ABOVE_18_INDEX] != 1) return (false, nullifier, address(0));
+        if (requiredStateCode != 0 && revealArray[_STATE_INDEX] != requiredStateCode) return (false, nullifier, address(0));
 
         (bool success, bytes memory result) = verifier.staticcall(
             abi.encodeCall(IZKVerifier.verifyProof, (ctx.query.taker, nullifier, revealArray, proof))
         );
-        return (success && result.length == 32 && abi.decode(result, (uint256)) == 1, nullifier);
+        if (!success || result.length != 64) return (false, nullifier, address(0));
+        (uint256 ok, uint256 who) = abi.decode(result, (uint256, uint256));
+        if (ok != 1 || who > type(uint160).max) return (false, nullifier, address(0));
+        address beneficiary = who == 0 ? ctx.query.taker : address(uint160(who));
+        return (true, nullifier, beneficiary);
     }
 }

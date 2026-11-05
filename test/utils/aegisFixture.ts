@@ -26,6 +26,7 @@ import type {
   MockGroth16AnonAadhaar,
   AnonAadhaarAdapter,
   AnonAadhaarGroth16Verifier,
+  AegisZKForwarder,
   MockERC4626Vault,
   StaticQuoter,
   TokenCustomDecimalsMock,
@@ -65,6 +66,7 @@ export interface RealProof {
 const PROVER_DIR = path.join(__dirname, "..", "..", "packages", "zk-aadhaar");
 /** Real pipeline in a subprocess: synthetic V2 Secure QR -> zkAadhaar parse + RSA -> Groth16 (snarkjs) */
 export function generateRealProof(o: { timestamp: number; seed: bigint; signal: string }): RealProof {
+  // signal = the beneficiary address the proof commits to
   const r = spawnSync(path.join(PROVER_DIR, "node_modules", ".bin", "tsx"),
     ["prover/cli.ts", "e2e", "--timestamp", String(o.timestamp), "--seed", o.seed.toString(), "--signal", o.signal],
     { cwd: PROVER_DIR, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -72,13 +74,24 @@ export function generateRealProof(o: { timestamp: number; seed: bigint; signal: 
   return JSON.parse(r.stdout);
 }
 
-/** 0x2A taker args for a real proof: [L][nullifier][revealArray][abi.encode(timestamp, uint256[8])] */
-export function encodeRealProofTakerArgs(p: RealProof, tamper = false): string {
+/**
+ * 0x2A taker args for a real proof: [L][nullifier][revealArray][envelope]
+ *   envelope = abi.encode(timestamp, uint256[8])             (direct)
+ *            | abi.encode(timestamp, recipient, uint256[8])  (via a trusted forwarder)
+ */
+export function encodeRealProofTakerArgs(p: RealProof, tamper = false, recipient?: string): string {
   const ps = p.proof.publicSignals;
   const words = p.proof.groth16Proof.map(BigInt);
   if (tamper) words[7] = words[7] ^ 1n;
-  const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256[8]"], [BigInt(ps.timestamp), words]);
+  const proofBytes = encodeEnvelope(BigInt(ps.timestamp), words, recipient);
   return encodeZKTakerArgs(BigInt(ps.nullifier), [BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state)], proofBytes);
+}
+
+export function encodeEnvelope(timestamp: bigint, words: bigint[], recipient?: string): string {
+  const c = ethers.AbiCoder.defaultAbiCoder();
+  return recipient
+    ? c.encode(["uint256", "address", "uint256[8]"], [timestamp, recipient, words])
+    : c.encode(["uint256", "uint256[8]"], [timestamp, words]);
 }
 
 /** App-scoped nullifier seed for the Anon Aadhaar adapter */
@@ -112,6 +125,8 @@ export interface AegisConfig {
   groth16TrustRoot: bigint;
   maxProofAge: number;
   adapterRequiredState: bigint;
+  /** Anon Aadhaar nullifier epoch (0 = static app seed; >0 = nullifierSeed rotates every epoch) */
+  epochDuration: number;
 }
 
 export const DEFAULT_CONFIG: AegisConfig = {
@@ -134,6 +149,7 @@ export const DEFAULT_CONFIG: AegisConfig = {
   groth16TrustRoot: TEST_SIGNER_PUBKEY_HASH,
   maxProofAge: 24 * 3600,
   adapterRequiredState: 0n,
+  epochDuration: 0,
 };
 
 export interface SwapResult {
@@ -169,9 +185,10 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   const groth16 = await deploy<AnonAadhaarGroth16Verifier>("AnonAadhaarGroth16Verifier", [
     await pairingVerifier.getAddress(), cfg.groth16TrustRoot,
   ]);
+  const forwarder = await deploy<AegisZKForwarder>("AegisZKForwarder", [await router.getAddress()]);
   const adapter = await deploy<AnonAadhaarAdapter>("AnonAadhaarAdapter", [
     cfg.zkBackend === "groth16" ? await groth16.getAddress() : await anonAadhaar.getAddress(),
-    AEGIS_NULLIFIER_SEED, cfg.maxProofAge, cfg.adapterRequiredState,
+    AEGIS_NULLIFIER_SEED, cfg.epochDuration, cfg.maxProofAge, cfg.adapterRequiredState, [await forwarder.getAddress()],
   ]);
   const usdcVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await usdc.getAddress(), "Aegis USDC Vault", "avUSDC"]);
   const wethVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await weth.getAddress(), "Aegis WETH Vault", "avWETH"]);
@@ -189,6 +206,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     anonAadhaar: await anonAadhaar.getAddress(),
     adapter: await adapter.getAddress(),
     groth16: await groth16.getAddress(),
+    forwarder: await forwarder.getAddress(),
     pairingVerifier: await pairingVerifier.getAddress(),
     zkVerifier: cfg.zkBackend === "ecdsa" ? await verifier.getAddress() : await adapter.getAddress(),
     maker: await maker.getAddress(),
@@ -270,11 +288,13 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     taker: string,
     reveal: RevealArray = MUMBAI_HUMAN_REVEAL,
     nullifier = 0xa11ce5n,
-    opts: { timestamp?: bigint } = {},
+    opts: { timestamp?: bigint; recipient?: string; seed?: bigint } = {},
   ): Promise<string> {
+    // `taker` is the beneficiary the proof commits to; `recipient` selects the forwarder envelope
+    const seed = opts.seed ?? (await adapter.currentNullifierSeed());
     if (cfg.zkBackend === "groth16") {
       const ts = opts.timestamp ?? BigInt((await ethers.provider.getBlock("latest"))!.timestamp);
-      return encodeRealProofTakerArgs(generateRealProof({ timestamp: Number(ts), seed: AEGIS_NULLIFIER_SEED, signal: taker }));
+      return encodeRealProofTakerArgs(generateRealProof({ timestamp: Number(ts), seed, signal: taker }), false, opts.recipient);
     }
     if (cfg.zkBackend === "ecdsa") {
       const hash = zkAttestationHash(chainId, addr.verifier, taker, nullifier, reveal);
@@ -286,8 +306,8 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     const groth16 = Array.from({ length: 8 }, (_, i) =>
       BigInt(ethers.solidityPackedKeccak256(["uint256", "uint256", "uint256", "uint256"], [signal, nullifier, timestamp, i])),
     ) as unknown as bigint[];
-    await (await anonAadhaar.connect(deployer).registerProof(AEGIS_NULLIFIER_SEED, nullifier, timestamp, signal, reveal, groth16)).wait();
-    const proof = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256[8]"], [timestamp, groth16]);
+    await (await anonAadhaar.connect(deployer).registerProof(seed, nullifier, timestamp, signal, reveal, groth16)).wait();
+    const proof = encodeEnvelope(timestamp, groth16, opts.recipient);
     return encodeZKTakerArgs(nullifier, reveal, proof);
   }
 
@@ -332,7 +352,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   return {
     cfg, params, order, orderHash, shipReceipt, chainId, issuer,
     accounts: { deployer, maker, human, bot, whale },
-    contracts: { aqua, weth, usdc, router, hook, strategy, verifier, anonAadhaar, adapter, groth16, pairingVerifier, usdcVault, wethVault, quoter },
+    contracts: { aqua, weth, usdc, router, hook, strategy, verifier, anonAadhaar, adapter, groth16, pairingVerifier, forwarder, usdcVault, wethVault, quoter },
     addr, tokenA,
     zkArgs, takerData, quote, swap, vaultAssets, aquaBalances,
   };
