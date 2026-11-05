@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# One-command AegisJIT demo: Hardhat node + local Anon Aadhaar prover -> deploy & seed -> UI
+# One-command AegisJIT demo: Hardhat node + local Anon Aadhaar prover + World ID artifacts -> deploy & seed -> UI
 #   ./scripts/start-local-demo.sh        (Ctrl-C stops everything it started)
 # First run downloads the official Anon Aadhaar v2 artifacts (~620 MB) into .cache/.
 set -euo pipefail
@@ -40,6 +40,15 @@ if [[ ! -f .cache/anon-aadhaar/v2.0.0/circuit_final.zkey ]]; then
   echo "▸ Downloading official Anon Aadhaar v2 artifacts (~620 MB, SHA-256 pinned)"
   node "$ZK/prover/fetch-artifacts.mjs"
 fi
+WID="packages/world-id"
+if [[ ! -d "$WID/node_modules" ]]; then
+  echo "▸ Installing World ID prover dependencies"
+  (cd "$WID" && npm install --no-audit --no-fund)
+fi
+if [[ ! -f .cache/semaphore/30/semaphore.zkey ]]; then
+  echo "▸ Downloading Semaphore depth-30 artifacts (~5.7 MB, SHA-256 pinned; VK == World ID's SemaphoreVerifier)"
+  node "$WID/prover/fetch-artifacts.mjs"
+fi
 if curl -s http://127.0.0.1:8547/health >/dev/null 2>&1; then
   echo "▸ Reusing Anon Aadhaar prover at http://127.0.0.1:8547"
 else
@@ -48,7 +57,7 @@ else
   PROVER_PID=$!
 fi
 
-echo "▸ Deploying + seeding AegisJIT with real Groth16 verification (writes ui/public/deployment.json)"
+echo "▸ Deploying + seeding AegisJIT with real Groth16 verification (Anon Aadhaar + World ID) (writes ui/public/deployment.json)"
 npx hardhat run --network localhost scripts/seed-local.ts
 
 if [[ ! -d ui/node_modules ]]; then

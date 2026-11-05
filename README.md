@@ -25,18 +25,19 @@ sovereign Indian regional verification are two doors into one fee logic.
 ## Judge quick-start
 
 ```bash
-yarn && (cd packages/zk-aadhaar && npm install) && (cd ui && npm install)
+yarn && (cd packages/zk-aadhaar && npm install) && (cd packages/world-id && npm install) && (cd ui && npm install)
 node packages/zk-aadhaar/prover/fetch-artifacts.mjs   # once: official Anon Aadhaar v2 artifacts, ~620 MB, SHA-256 pinned
+node packages/world-id/prover/fetch-artifacts.mjs     # once: Semaphore depth-30 artifacts (World ID's verifier key), ~5.7 MB, pinned
 
-npx hardhat test && forge test                        # 103 Hardhat tests (incl. 10 with REAL Groth16 proofs, 12 World ID) + 8 Foundry fuzz properties
-npx hardhat run scripts/demo-mumbai.ts                # CLI demo: real proof in Scenario 1 + ecPairing gas breakdown
+npx hardhat test && forge test                        # 111 Hardhat tests (10 REAL Anon Aadhaar + 8 REAL World ID proofs) + 19 Foundry properties
+npx hardhat run scripts/demo-mumbai.ts                # CLI demo: real Aadhaar proof (1A) + real World ID proof (1B) + gas breakdowns
 ./scripts/start-local-demo.sh                         # node + local prover + seed + UI at http://127.0.0.1:5173
 cd ui && npm run smoke                                # headless: QR → RSA → Groth16 → on-chain verify → swap() (stack running)
 ```
 
 Without the artifacts, the real-proof tests **skip with a warning** and the demo falls back to
-the mock verifier, with a banner saying so. Each real proof takes ~13 s in Node and a few GB of
-RAM.
+the mock verifiers, with a banner saying so. Each real Aadhaar proof takes ~13 s in Node and a
+few GB of RAM; a World ID (Semaphore depth-30) proof takes ~0.4 s.
 
 ---
 
@@ -199,16 +200,35 @@ the verified-human dispatcher makes the tier tests fail.
 - **Sybil policy.** `0x2A` binds the World ID `nullifierHash` to the first address that swaps with
   it (`nullifierTaker[worldIdAdapter][nullifierHash]`): one discounted address per human. The
   Aadhaar adapter keeps its epoch-rotating nullifiers; the two schemes never share a namespace.
+- **Real proofs, World ID's real verifier.** `contracts/zk/vendor/world-id/SemaphoreVerifier.sol`
+  is World ID's own Groth16 verifier (world-id-contracts, MIT; only the import path changed). All
+  24 verification-key constants in it equal the key exported from the public Semaphore depth-30
+  trusted-setup zkey (SHA-256 pinned in `packages/world-id/prover/fetch-artifacts.mjs`).
+  `packages/world-id` builds a local depth-30 identity tree from Semaphore v3 identities and
+  proves membership with snarkjs (~0.4 s), using World ID's hashing for `signalHash` and the
+  external nullifier. So the proofs verified here are checked by the exact contract World ID runs
+  on-chain; the only local part is the tree, where the project plays the signup sequencer.
 - **Local World ID stack.** `MockWorldIDRouter` mirrors the Router + Identity Manager: group
   routing (`NoSuchGroup`), root history with the 1-hour `ExpiredRoot` window, `NonExistentRoot`,
   an identity-operator-only `registerRoot`, and delegation of the pairing check to an
-  `IWorldIDSemaphoreVerifier` — `MockSemaphoreVerifier` (accepts only exactly-registered
-  statements; no hardcoded success) in the unit tests.
-- **Tests** (`test/WorldIDAdapter.test.ts`): valid proof → same tier as Aadhaar, quote == swap,
-  `NullifierBound`; unknown root, expired root, wrong group, tampered proof, foreign
-  app/action, malformed envelopes → bot tier without reverting; reused nullifier from a second
-  wallet → bot tier; replayed takerData → bot tier (strict mode reverts); Maker policy
+  `IWorldIDSemaphoreVerifier` — the vendored `SemaphoreVerifier` in the end-to-end paths, or
+  `MockSemaphoreVerifier` (accepts only exactly-registered statements; no hardcoded success) where
+  real proving is impossible (Foundry fuzzing, malformed inputs).
+- **Measured costs** (Hardhat, cancun): `SemaphoreVerifier.verifyProof` 239,014 gas incl. the 21k
+  base; `ecPairing` 181,100; the whole 0x2A verifier call ≈ 224k; a swap with a World ID proof
+  ≈ 535k vs ≈ 316k without (overhead ≈ 219k, ~50k less than the 9-input Anon Aadhaar verifier).
+- **Tests.** `test/WorldIDAdapter.test.ts` (mock verifier): valid proof → same tier as Aadhaar,
+  quote == swap, `NullifierBound`; unknown root, expired root, wrong group, tampered proof,
+  foreign app/action, malformed envelopes → bot tier without reverting; reused nullifier from a
+  second wallet → bot tier; replayed takerData → bot tier (strict mode reverts); Maker policy
   `verifierTypes` 1 / 2 / 3; trusted-forwarder envelope; real STATICCALL quote.
+  `test/RealWorldIDSwap.test.ts` (real proofs, real verifier): tree root == registered root,
+  World ID hashing conventions, pairing accept / reject, swap with `ecPairing` in the trace,
+  replay, Sybil with a fresh proof from a second wallet, root lifecycle, tampered proof.
+  `test/foundry/WorldIDAdapter.t.sol`: 5,000-run fuzz of signal binding, external nullifier,
+  root history, router access, forwarder envelopes and malformed input, plus the committed real
+  proof (`test/fixtures/world-id/human-proof.json`) against the vendored verifier with every
+  proof word fuzzed.
 - Production wiring: deploy `WorldIDAdapter(worldIdRouter, 1, "app_…", "aegis-jit-fee-tier", [forwarder])`
   with the World ID Router address of the target chain, and pass the IDKit result's
   `merkle_root`, `nullifier_hash` and `proof` into `encodeWorldIdTakerArgs`.
@@ -324,14 +344,15 @@ the UI.
 
 ## Demo (`scripts/demo-mumbai.ts`)
 
-The demo deploys Aqua, WETHMock, USDC, two vaults (1,000,000 USDC + 400 WETH), the verifier and
-the router, then ships the strategy and runs three on-chain scenarios. It prints tx hashes, gas,
-and vault balances before and after each one:
+The demo deploys Aqua, WETHMock, USDC, two vaults (1,000,000 USDC + 400 WETH), both verifier
+stacks and the router, then ships the strategy and runs five on-chain scenarios. It prints tx
+hashes, gas, and vault balances before and after each one:
 
 | Scenario | Result |
 |---|---|
-| 1 · Verified human, 5,000 USDC → WETH | **real** Groth16 proof from a signed test QR (~13 s) → `0x2A` pass on-chain (ecPairing 181,100 gas) → 0.15% fee vs 0.30% for a bot; quote == swap (0 wei) |
-| 2 · Unverified bot, 50,000 USDC → WETH | `0x7A` surge: 150 USDC base + 420 USDC surge (1.14% effective) |
+| 1A · Verified human via ZK Aadhaar, 5,000 USDC → WETH | **real** Anon Aadhaar Groth16 proof from a signed test QR (~13 s) → `0x2A` type 2 → 0.15% fee vs 0.30% for a bot; quote == swap (0 wei) |
+| 1B · Verified human via World ID, 5,000 USDC → WETH | **real** Semaphore depth-30 Groth16 proof (~0.4 s) → `0x2A` type 1 → `WorldIDAdapter` → World ID's `SemaphoreVerifier` (ecPairing 181,100 gas) → 0.15% fee, the identical tier; World ID overhead ≈ 219k gas |
+| 2 · Unverified bot, 50,000 USDC → WETH | `0x7A` surge: 150 USDC base + 480 USDC surge (1.26% effective, with the two 5k human trades already in the window) |
 | 3 · Toxic whale, 500,000 USDC → WETH | **reverted** by `0x9A` (`JITExposureCapExceeded`); vault untouched, 75% structurally out of reach |
 | 4 · Split attack, 5 × 10,000 vs 1 × 50,000 USDC | fresh window, snapshot/revert A/B: split pays **the same** 503.40 USDC fee and gets 0.0011 WETH **less**; a stateless fee would have charged 150 USDC |
 
@@ -351,15 +372,18 @@ contracts/
   interfaces/IZKVerifier.sol
   zk/                          IAnonAadhaar · AnonAadhaarAdapter · AnonAadhaarGroth16Verifier · WorldIDAdapter
   zk/world-id/                 IWorldID (router interface) · ByteHasher · IWorldIDSemaphoreVerifier
+  zk/vendor/world-id/          SemaphoreVerifier.sol (World ID's, MIT, one import path changed) + ISemaphoreVerifier
   zk/vendor/anon-aadhaar/      Verifier.sol (official, unmodified, GPL-3.0)
   libs/AegisOpcodes.sol
   mocks/                       MockAnonIdentityVerifier · MockGroth16AnonAadhaar · MockWorldIDRouter · MockSemaphoreVerifier · MockERC4626Vault · StaticQuoter
 src/aegisProgramBuilder.ts     TypeScript SDK (programs, orders, ZK taker payloads)
 packages/zk-aadhaar/           zkAadhaar QR scanner/parser/RSA verifier (Next.js app + libs)
   prover/                      Anon Aadhaar inputs + snarkjs prover · CLI · 127.0.0.1 service · test signer
+packages/world-id/             World ID-compatible local tree + prover (Semaphore v3, depth 30, snarkjs) · CLI · artifact fetcher
 test/AegisJIT.test.ts          invariant suite      test/AnonAadhaarAdapter.test.ts · test/WorldIDAdapter.test.ts
 test/RealGroth16Swap.test.ts   real proofs → swap   test/EpochNullifiers.test.ts (epochs, forwarders)
-test/foundry/                  fee-math + adapter fuzzing
+test/RealWorldIDSwap.test.ts   real World ID proofs → swap   test/fixtures/world-id/ (committed real proof)
+test/foundry/                  fee-math, Aadhaar adapter and World ID adapter fuzzing (+ real pairing)
 scripts/demo-mumbai.ts         judge CLI demo       scripts/seed-local.ts · start-local-demo.sh
 ui/                            SwapVM Inspector     docs/SPEC.md    spec & deviations
 ```
@@ -380,6 +404,12 @@ The original template (`AquaAMM`, `MockTaker`, `deploy/`) is unchanged and its t
 - Proving runs in a local Node process, not inside the browser.
 - Each epoch needs a fresh proof. Proofs also expire after 24 h because the QR timestamp
   must be recent.
+- World ID locally means a local identity tree: the project is its own signup sequencer, and
+  `MockWorldIDRouter` publishes its roots. On a live network the adapter points at the World ID
+  Router and takers prove with World App / IDKit; nothing in the adapter or the opcode changes.
+- The World ID external nullifier is one action, so a human's `nullifierHash` is stable: trades
+  of the bound address are linkable to one another (they share an address anyway). Rotating the
+  action per epoch, as the Aadhaar seed rotates, is possible but not implemented.
 - Not audited.
 
 ## Disclaimer
@@ -401,6 +431,8 @@ calls or interfaces with SwapVM.
 | `LicenseRef-Degensoft-SwapVM-1.1` | `src/aegisProgramBuilder.ts`, `test/utils/aegisFixture.ts` | Import the swap-vm-template helper `test/utils/SwapVMHelpers.ts` |
 | `LicenseRef-Degensoft-SwapVM-1.1` (unchanged template files) | `AquaAMM.sol`, `MockTaker.sol`, `deploy/`, `test/AquaAMM.test.ts`, `test/utils/{fixtures,ProgramBuilder,SwapVMHelpers}.ts` | Original swap-vm-template |
 | `GPL-3.0` (unmodified vendor) | `contracts/zk/vendor/anon-aadhaar/Verifier.sol` | snarkjs-generated Groth16 verifier from Anon Aadhaar v2; deployed separately and called via an independently written interface |
+| `MIT` (vendor, one import path changed) | `contracts/zk/vendor/world-id/SemaphoreVerifier.sol`, `ISemaphoreVerifier.sol` | World ID's Groth16 verifier from worldcoin/world-id-contracts; deployed separately and called via the independently declared `IWorldIDSemaphoreVerifier` |
+| `MIT` | `packages/world-id/` | Local Semaphore v3 identity tree + prover (uses `@semaphore-protocol/*` and snarkjs, MIT/GPL-3.0 runtime deps, not redistributed) |
 | `MIT` | `packages/zk-aadhaar/` (Aadhaar Secure-QR scanner/parser/RSA verifier + Node Groth16 prover) | Independent; reuses circuit-input encoding from `@anon-aadhaar/core` (MIT, Ethereum Foundation) |
 | `MIT` | `contracts/interfaces/IZKVerifier.sol`, `contracts/zk/*.sol`, `contracts/zk/world-id/*.sol` (World ID interfaces, after worldcoin/world-id-onchain-template, MIT), `contracts/AegisJITVaultHook.sol`, `contracts/mocks/*`, `test/*.test.ts` (AegisJIT), `scripts/*`, `ui/` | Independent code that only implements or calls interfaces (`IMakerHooks`, `ISwapVM`) or talks to deployed contracts via ABI/RPC (§3.3) |
 

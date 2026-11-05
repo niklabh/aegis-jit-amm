@@ -9,6 +9,7 @@ solc_version = "0.8.30"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
 remappings = [
   "@1inch/=node_modules/@1inch/",
   "@openzeppelin/=node_modules/@openzeppelin/",

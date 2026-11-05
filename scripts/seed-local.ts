@@ -4,24 +4,34 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { deployAegis, MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH } from "../test/utils/aegisFixture";
+import { deployAegis, MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH, WORLD_ID_MEMBERS, worldIdArtifactsAvailable } from "../test/utils/aegisFixture";
 
 const hre = require("hardhat");
 const { ethers } = hre;
 
 async function main() {
-  // Real BN254 Groth16 verification; nullifier seed rotates every 24 h
+  // Real BN254 Groth16 verification; nullifier seed rotates every 24 h. World ID: real Semaphore
+  // verifier when the depth-30 artifacts are present, MockSemaphoreVerifier otherwise.
   const EPOCH = 24 * 3600;
-  const env = await deployAegis({ zkBackend: "groth16", epochDuration: EPOCH });
+  const REAL_WORLD_ID = worldIdArtifactsAvailable();
+  const env = await deployAegis({ zkBackend: "groth16", epochDuration: EPOCH, worldIdBackend: REAL_WORLD_ID ? "semaphore" : "mock" });
   const { maker, human, bot, whale } = env.accounts;
   const humanAddr = await human.getAddress();
   console.log("Generating a real Groth16 proof for the default 'Verified Human' profile (~15 s)…");
   const zk = await env.zkArgs(humanAddr);
   const humanData = env.takerData({ tokenIn: env.addr.usdc, zk });
-  // takerTraits header (22 B) for any 450-byte ZK payload: the UI appends a fresh proof to it
+  // takerTraits header (22 B): slice indexes (incl. the end offset of instructionsArgs) + flags.
+  // It depends on the payload LENGTH, so one header per payload type; the UI appends a fresh proof.
   const zkLen = ethers.getBytes(zk).length;
   const header = ethers.dataSlice(humanData, 0, 22);
   if (ethers.concat([header, zk]) !== humanData) throw new Error("takerData header layout changed");
+
+  console.log(`Generating a World ID proof for the 'Verified Human' profile (${REAL_WORLD_ID ? "real Semaphore depth-30" : "mock verifier"})…`);
+  const worldZk = await env.worldIdArgs(humanAddr); // identity "human" of the local tree; publishes the root
+  const worldData = env.takerData({ tokenIn: env.addr.usdc, zk: worldZk });
+  const worldLen = ethers.getBytes(worldZk).length;
+  const worldHeader = ethers.dataSlice(worldData, 0, 22);
+  if (ethers.concat([worldHeader, worldZk]) !== worldData) throw new Error("takerData header layout changed (World ID)");
 
   const abi = async (name: string) => (await hre.artifacts.readArtifact(name)).abi;
   const cfg = Object.fromEntries(Object.entries(env.cfg).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v]));
@@ -49,8 +59,25 @@ async function main() {
       trustRoot: TEST_SIGNER_PUBKEY_HASH.toString(),
       maharashtraPacked: MAHARASHTRA_PACKED.toString(),
     },
+    worldId: {
+      backend: REAL_WORLD_ID ? "semaphore" : "mock",
+      appId: env.cfg.worldIdAppId,
+      action: env.cfg.worldIdAction,
+      externalNullifier: (await env.contracts.worldIdAdapter.EXTERNAL_NULLIFIER()).toString(),
+      groupId: 1,
+      treeDepth: 30,
+      // identity seeds of the local tree: Identity(`${identityPrefix}${seed}`) — the dashboard rebuilds the same tree
+      identityPrefix: "aegis-jit/world-id/",
+      members: WORLD_ID_MEMBERS,
+      root: (await env.contracts.worldIdRouter.latestRoot()).toString(),
+      rootHistoryExpiry: env.cfg.rootHistoryExpiry,
+      payloadLength: worldLen,
+      takerHeader: worldHeader,
+      artifactsBase: "/semaphore/30",
+    },
     takerData: {
       human: humanData,
+      worldIdHuman: worldData,
       bot: env.takerData({ tokenIn: env.addr.usdc }),
       whale: env.takerData({ tokenIn: env.addr.usdc }),
     },
@@ -59,6 +86,9 @@ async function main() {
       vault: await abi("MockERC4626Vault"),
       aqua: await abi("Aqua"),
       adapter: await abi("AnonAadhaarAdapter"),
+      worldIdAdapter: await abi("WorldIDAdapter"),
+      worldIdRouter: await abi("MockWorldIDRouter"),
+      semaphoreVerifier: await abi(REAL_WORLD_ID ? "SemaphoreVerifier" : "MockSemaphoreVerifier"),
     },
   };
 

@@ -407,6 +407,25 @@ proof generated locally for a local identity tree verifies against the exact con
 runs on-chain. The only thing local is the tree: the project plays the signup sequencer and
 publishes its own roots to `MockWorldIDRouter`.
 
+**Measured gas** (Hardhat, cancun; `test/RealWorldIDSwap.test.ts`, `scripts/demo-mumbai.ts`):
+
+| Item | Gas |
+|---|---:|
+| `ecPairing` STATICCALL (4 pairs) | 181,100 |
+| `SemaphoreVerifier.verifyProof` (incl. 21k base; MSM over 4 public inputs + pairing) | 239,014 |
+| 0x2A verifier call (adapter + router + verifier) | ≈ 224,500 |
+| swap with a World ID proof vs the same swap without | ≈ 534,600 vs ≈ 315,900 (overhead ≈ 218,700) |
+
+The World ID path costs about 50k gas less than the Anon Aadhaar path (4 public inputs instead of 9).
+
+**Local prover (`packages/world-id`).** Semaphore v3 `Identity(seed)` (deterministic for tests),
+`Group(1, 30, commitments)`, snarkjs `groth16.fullProve` over the circuit inputs
+`{identityTrapdoor, identityNullifier, treePathIndices, treeSiblings, externalNullifier, signalHash}`
+with the already-hashed World ID values, proof packed `[a0, a1, b01, b00, b11, b10, c0, c1]`.
+Hardhat tests and the demo call it through a JSON CLI (`prover/cli.ts`), like the Aadhaar prover.
+A real proof for the default tree is committed as `test/fixtures/world-id/human-proof.json` so the
+Foundry suite exercises the vendored verifier without snarkjs.
+
 ## 8. Milestones
 
 1. Spec (this file)

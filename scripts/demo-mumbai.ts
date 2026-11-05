@@ -3,14 +3,16 @@
 //   npx hardhat run scripts/demo-mumbai.ts                      (in-process network)
 //   npx hardhat node  &&  npx hardhat run --network localhost scripts/demo-mumbai.ts
 //
-// Deploys Aqua, WETHMock, USDC, 2x MockERC4626Vault (1,000,000 USDC + 400 WETH), the
-// MockAnonIdentityVerifier and AegisSwapVMRouter, ships the Maker's self-custodial AegisJIT
-// strategy to Aqua and runs three live on-chain scenarios.
+// Deploys Aqua, WETHMock, USDC, 2x MockERC4626Vault (1,000,000 USDC + 400 WETH), the ZK Aadhaar and
+// World ID verifier stacks and AegisSwapVMRouter, ships the Maker's self-custodial AegisJIT strategy
+// to Aqua and runs the live on-chain scenarios (1A ZK Aadhaar human, 1B World ID human, 2 bot,
+// 3 whale, 4 split attack).
 
 import { existsSync } from "fs";
 import * as path from "path";
 import {
   deployAegis, USDC, AegisEnv, generateRealProof, encodeRealProofTakerArgs, MAHARASHTRA_PACKED, RealProof,
+  generateWorldIdProof, encodeWorldIdProofTakerArgs, worldIdArtifactsAvailable, WorldIdProof, WORLD_ID_MEMBERS,
 } from "../test/utils/aegisFixture";
 import { AegisOpcodes, AegisProgramBuilder, FEE_BPS } from "../src/aegisProgramBuilder";
 
@@ -91,7 +93,7 @@ async function transferTrace(env: AegisEnv, receipt: any, title: string) {
   tag(env.addr.maker, "Maker"); tag(env.addr.router, "Router"); tag(env.addr.aqua, "Aqua"); tag(env.addr.hook, "JITHook");
   tag(env.addr.usdcVault, "avUSDC"); tag(env.addr.wethVault, "avWETH"); tag(ethers.ZeroAddress, "0x0 (mint/burn)");
   tag(await env.accounts.human.getAddress(), "Human"); tag(await env.accounts.bot.getAddress(), "Bot");
-  tag(await env.accounts.whale.getAddress(), "Whale");
+  tag(await env.accounts.whale.getAddress(), "Whale"); tag(await env.accounts.worldHuman.getAddress(), "World ID human");
   const token: Record<string, [string, (v: bigint) => string]> = {
     [env.addr.usdc.toLowerCase()]: ["USDC", (v) => fmtUsdc(v)],
     [env.addr.weth.toLowerCase()]: ["WETH", (v) => fmtWeth(v, 6)],
@@ -140,20 +142,33 @@ async function main() {
     console.log(`${C.yellow}${C.bold}⚠ Anon Aadhaar artifacts not found — Scenario 1 falls back to the MOCK Groth16 verifier.${C.reset}`);
     console.log(`${C.yellow}  For real BN254 proofs run: node packages/zk-aadhaar/prover/fetch-artifacts.mjs (~620 MB)${C.reset}`);
   }
-  const env = await deployAegis(REAL_ZK
-    ? { zkBackend: "groth16", epochDuration: 24 * 3600, adapterRequiredState: MAHARASHTRA_PACKED }
-    : { zkBackend: "anonAadhaar" });
-  const { human, bot, whale } = env.accounts;
+  const REAL_WORLD_ID = worldIdArtifactsAvailable();
+  if (!REAL_WORLD_ID) {
+    console.log(`${C.yellow}${C.bold}⚠ Semaphore depth-30 artifacts not found — Scenario 1B falls back to the MOCK Semaphore verifier.${C.reset}`);
+    console.log(`${C.yellow}  For real World ID-style proofs run: node packages/world-id/prover/fetch-artifacts.mjs (~5.7 MB)${C.reset}`);
+  }
+  const env = await deployAegis({
+    ...(REAL_ZK
+      ? { zkBackend: "groth16" as const, epochDuration: 24 * 3600, adapterRequiredState: MAHARASHTRA_PACKED }
+      : { zkBackend: "anonAadhaar" as const }),
+    worldIdBackend: REAL_WORLD_ID ? "semaphore" : "mock",
+  });
+  const { human, bot, whale, worldHuman } = env.accounts;
   const { router } = env.contracts;
 
   table("Deployments (local Hardhat network)", [
     ["Aqua", env.addr.aqua],
     ["AegisSwapVMRouter", env.addr.router],
     ["AegisJITVaultHook", env.addr.hook],
-    ["AnonAadhaarAdapter (0x2A verifier)", env.addr.adapter],
+    ["AnonAadhaarAdapter (0x2A type 2 verifier)", env.addr.adapter],
     ...(REAL_ZK
       ? [["AnonAadhaarGroth16Verifier", env.addr.groth16], ["Verifier.sol (BN254, ecPairing)", env.addr.pairingVerifier]] as [string, string][]
       : [["MockGroth16AnonAadhaar (fallback)", env.addr.anonAadhaar]] as [string, string][]),
+    ["WorldIDAdapter (0x2A type 1 verifier)", env.addr.worldIdAdapter],
+    ["MockWorldIDRouter (World ID Router + Identity Manager)", env.addr.worldIdRouter],
+    ...(REAL_WORLD_ID
+      ? [["SemaphoreVerifier (World ID's, vendored · ecPairing)", env.addr.semaphoreReal]] as [string, string][]
+      : [["MockSemaphoreVerifier (fallback)", env.addr.semaphoreMock]] as [string, string][]),
     ["USDC (6 dp)", env.addr.usdc],
     ["WETHMock", env.addr.weth],
     ["avUSDC  MockERC4626Vault", env.addr.usdcVault],
@@ -172,6 +187,7 @@ async function main() {
     ["orderHash", short(env.orderHash)],
     ["Maker vault position", `${fmtUsdc(v0.usdc, 0)} USDC  +  ${fmtWeth(v0.weth, 0)} WETH  (shares in Maker wallet)`],
     ["Aqua virtual allocation", `${fmtUsdc(env.cfg.usdcLiquidity, 0)} USDC  +  ${fmtWeth(env.cfg.wethLiquidity, 0)} WETH  (no tokens moved)`],
+    ["0x2A verifiers (types = 3)", `type 1 World ID → WorldIDAdapter  ·  type 2 ZK Aadhaar → AnonAadhaarAdapter  ·  tiered mode`],
     ["λ exposure cap / boost", `${env.cfg.lambdaBps / 100}% per execution  /  ${env.cfg.virtualBoostBps / 10_000}x virtual depth`],
     ["fees (1e9 = 100%)", `base ${env.cfg.baseFeeBps / 1e7}%  ·  surge marginal ${env.cfg.maxSurgeFeeBps / 1e7}% above ${Number(env.cfg.impactThresholdBps) / 100}% util`],
     ["program", `${program.length} bytes · ${ops.length} instructions`],
@@ -180,9 +196,10 @@ async function main() {
 
   type Row = { name: string; tier: string; inStr: string; outStr: string; price: string; fee: string; gas: string; hash: string; status: string };
   const results: Row[] = [];
+  let fee1A = 0n, fee1B = 0n, fee2 = 0n;
 
-  // ---------------- Scenario 1 ----------------
-  banner("1 · Verified human retail trader: 5,000 USDC -> WETH");
+  // ---------------- Scenario 1A ----------------
+  banner("1A · Verified human via ZK Aadhaar: 5,000 USDC -> WETH");
   {
     const amount = USDC(5_000);
     const hAddr = await human.getAddress();
@@ -225,7 +242,8 @@ async function main() {
         ["gas · swap with proof", `${n(s.receipt.gasUsed)}  vs  ${n(botGas)} same swap without proof  →  ZK overhead ${n(s.receipt.gasUsed - botGas)}`],
       ]);
     }
-    table("0x2A ZK pass → 0x7A human tier (50% base-fee discount) → settled via Aqua", [
+    fee1A = fee.total;
+    table("0x2A ZK Aadhaar pass (type 2) → 0x7A human tier (50% base-fee discount) → settled via Aqua", [
       ["proof", real ? `REAL Groth16 (BN254) · signal = ${short(hAddr)}` : `Anon Aadhaar Groth16 (MOCK verifier fallback) · signal = ${short(hAddr)}`],
       ["quote()  (static)", `${fmtWeth(q.amountOut, 6)} WETH`],
       ["swap()   (executed)", `${fmtWeth(s.amountOut, 6)} WETH  ${s.amountOut === q.amountOut ? C.green + "== quote ✔ (0 wei)" + C.reset : C.red + "!= quote" + C.reset}`],
@@ -235,8 +253,71 @@ async function main() {
       ["avUSDC (Maker)", `${fmtUsdc(before.usdc)}  →  ${fmtUsdc(after.usdc)}   (+${fmtUsdc(after.usdc - before.usdc)} re-deposited JIT)`],
       ["avWETH (Maker)", `${fmtWeth(before.weth)}  →  ${fmtWeth(after.weth)}   (−${fmtWeth(before.weth - after.weth)} withdrawn JIT)`],
     ]);
-    await transferTrace(env, s.receipt, "Scenario 1 settlement: JIT withdraw → Aqua pull → taker push → JIT re-deposit");
-    results.push({ name: "1 Human retail", tier: C.green + (real ? "Groth16 ✔" : "ZK (mock)") + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
+    await transferTrace(env, s.receipt, "Scenario 1A settlement: JIT withdraw → Aqua pull → taker push → JIT re-deposit");
+    results.push({ name: "1A Human · ZK Aadhaar", tier: C.green + (real ? "Groth16 ✔" : "ZK (mock)") + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
+      price: fmtUsdc(amount * 10n ** 18n / s.amountOut), fee: pct(fee.total, amount, 3), gas: s.receipt.gasUsed.toString(), hash: short(s.receipt.hash), status: C.green + "filled" + C.reset });
+  }
+
+  // ---------------- Scenario 1B ----------------
+  banner("1B · Verified human via World ID: 5,000 USDC -> WETH");
+  {
+    const amount = USDC(5_000);
+    const wAddr = await worldHuman.getAddress();
+    const { worldIdAdapter, worldIdRouter } = env.contracts;
+    const ext: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
+    const hex = (d: string) => "0x" + BigInt(d).toString(16);
+    let real: WorldIdProof | null = null;
+    let zk: string;
+    if (REAL_WORLD_ID) {
+      process.stdout.write(`${C.dim}  Semaphore v3 identity → depth-30 merkle path → Groth16 proving…${C.reset}`);
+      real = generateWorldIdProof({ identity: "human", signal: wAddr, externalNullifier: ext });
+      if ((await worldIdRouter.latestRoot()) !== BigInt(real.root)) {
+        await (await worldIdRouter.connect(env.accounts.deployer).registerRoot(BigInt(real.root))).wait(); // sequencer publishes the tree root
+      }
+      zk = encodeWorldIdProofTakerArgs(real);
+      process.stdout.write(` done (${real.provingMs} ms)\n`);
+    } else {
+      zk = await env.worldIdArgs(wAddr);
+    }
+    const data = env.takerData({ tokenIn: env.addr.usdc, zk });
+    const botData = env.takerData({ tokenIn: env.addr.usdc });
+    const botQuote = await env.quote(bot, amount, botData);
+    const snap = await rpc("evm_snapshot");
+    const botGas = (await env.swap(bot, amount, botData)).receipt.gasUsed;
+    await rpc("evm_revert", [snap]);
+    const q = await env.quote(worldHuman, amount, data);
+    const fee = await surgeFeeBreakdown(env, amount, true);
+    const before = await env.vaultAssets();
+    const s = await env.swap(worldHuman, amount, data);
+    const after = await env.vaultAssets();
+    fee1B = fee.total;
+
+    const adapterGas = await measureStaticCall(s.receipt.hash, BigInt(env.addr.worldIdAdapter));
+    if (real) {
+      const pairing = await measureStaticCall(s.receipt.hash, 8n);
+      table("World ID pipeline (Semaphore v3 identity → depth-30 tree → BN254 on-chain)", [
+        ["1 · identity", `Semaphore v3 identity "human" · commitment ${short(hex(real.identityCommitment))} · leaf #${real.memberIndex} of the local tree (${WORLD_ID_MEMBERS.length} members, depth 30)`],
+        ["2 · Groth16 proof", `${real.provingMs.toLocaleString()} ms (snarkjs, public PSE depth-30 artifacts) · 8 × uint256`],
+        ["    public signals", `root ${short(hex(real.root))} · nullifierHash ${short(hex(real.nullifierHash))} · signalHash = hashToField(${short(wAddr)}) · externalNullifier = hashToField(appId ‖ action)`],
+        ["3 · on-chain verify", `0x2A → WorldIDAdapter → IWorldID.verifyProof(root, group 1, …) → MockWorldIDRouter (root history) → SemaphoreVerifier (World ID's own) → ecPairing 0x08`],
+        ["gas · ecPairing (0x08)", `${n(pairing)}  (measured; EIP-1108 45,000 + 4×34,000 = 181,000, +100 warm access)`],
+        ["gas · 0x2A verifier call", `${n(adapterGas)}  (adapter + router + Groth16: MSM over 4 public inputs + pairing)`],
+        ["gas · swap with proof", `${n(s.receipt.gasUsed)}  vs  ${n(botGas)} same swap without proof  →  World ID overhead ${n(s.receipt.gasUsed - botGas)}`],
+      ]);
+    }
+    table("0x2A World ID pass (type 1) → 0x7A human tier (50% base-fee discount) → settled via Aqua", [
+      ["proof", real ? `REAL Semaphore Groth16 (BN254) · signal = ${short(wAddr)}` : `World ID Semaphore proof (MOCK verifier fallback) · signal = ${short(wAddr)}`],
+      ["quote()  (static)", `${fmtWeth(q.amountOut, 6)} WETH`],
+      ["swap()   (executed)", `${fmtWeth(s.amountOut, 6)} WETH  ${s.amountOut === q.amountOut ? C.green + "== quote ✔ (0 wei)" + C.reset : C.red + "!= quote" + C.reset}`],
+      ["same trade as unverified bot", `${fmtWeth(botQuote.amountOut, 6)} WETH  (human gets +${fmtWeth(q.amountOut - botQuote.amountOut, 6)} WETH)`],
+      ["fee charged", `${fmtUsdc(fee.total)} USDC  (${pct(fee.total, amount, 3)})  ${fee.expectedOut === s.amountOut ? C.green + "off-chain model == on-chain ✔" + C.reset : C.red + "model mismatch" + C.reset}  ·  ${fee1A === fee1B ? C.green + "same tier as 1A ✔" + C.reset : C.red + "tier differs from 1A" + C.reset}`],
+      ["nullifier binding", `nullifierHash → ${short(wAddr)} (one discounted address per World ID)`],
+      ["tx / gas", `${short(s.receipt.hash)}  /  ${s.receipt.gasUsed}${real ? "" : `  (0x2A verifier call ${n(adapterGas)} gas)`}`],
+      ["avUSDC (Maker)", `${fmtUsdc(before.usdc)}  →  ${fmtUsdc(after.usdc)}   (+${fmtUsdc(after.usdc - before.usdc)} re-deposited JIT)`],
+      ["avWETH (Maker)", `${fmtWeth(before.weth)}  →  ${fmtWeth(after.weth)}   (−${fmtWeth(before.weth - after.weth)} withdrawn JIT)`],
+    ]);
+    await transferTrace(env, s.receipt, "Scenario 1B settlement");
+    results.push({ name: "1B Human · World ID", tier: C.green + (real ? "Semaphore ✔" : "World ID (mock)") + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
       price: fmtUsdc(amount * 10n ** 18n / s.amountOut), fee: pct(fee.total, amount, 3), gas: s.receipt.gasUsed.toString(), hash: short(s.receipt.hash), status: C.green + "filled" + C.reset });
   }
 
@@ -250,6 +331,7 @@ async function main() {
     const before = await env.vaultAssets();
     const s = await env.swap(bot, amount, data);
     const after = await env.vaultAssets();
+    fee2 = fee.total;
     table("0x2A no proof (tiered: treated as bot) → 0x7A volatility surge fee", [
       ["quote()  (static)", `${fmtWeth(q.amountOut, 6)} WETH`],
       ["swap()   (executed)", `${fmtWeth(s.amountOut, 6)} WETH  ${s.amountOut === q.amountOut ? C.green + "== quote ✔" + C.reset : C.red + "!= quote" + C.reset}`],
@@ -365,6 +447,12 @@ async function main() {
   banner("Summary");
   grid(["Scenario", "Taker", "In", "Out", "USDC/WETH", "Fee", "Gas", "Tx", "Result"],
     results.map((r) => [r.name, r.tier, r.inStr, r.outStr, r.price, r.fee, r.gas, r.hash, r.status]));
+
+  table("Dual verification → one 0x7A fee logic", [
+    ["1A · ZK Aadhaar proof (type 2)", `${pct(fee1A, USDC(5_000), 3)} on 5,000 USDC  (${fmtUsdc(fee1A)} USDC)`],
+    ["1B · World ID proof (type 1)", `${pct(fee1B, USDC(5_000), 3)} on 5,000 USDC  (${fmtUsdc(fee1B)} USDC)  ${fee1A === fee1B ? C.green + "identical retail tier ✔" + C.reset : C.red + "tiers differ" + C.reset}`],
+    ["2  · unverified bot", `${pct(fee2, USDC(50_000), 3)} on 50,000 USDC  (${fmtUsdc(fee2)} USDC, incl. surge)`],
+  ]);
 
   const vEnd = await env.vaultAssets();
   const refPrice = env.cfg.usdcLiquidity * 10n ** 18n / env.cfg.wethLiquidity; // 2,500 USDC/WETH

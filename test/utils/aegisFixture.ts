@@ -5,6 +5,7 @@
 
 import { BytesLike, Signer, Wallet, ContractTransactionReceipt, ContractTransactionResponse } from "ethers";
 import { spawnSync } from "child_process";
+import { existsSync } from "fs";
 import * as path from "path";
 
 import { TakerTraitsLib } from "./SwapVMHelpers";
@@ -101,6 +102,56 @@ export function encodeEnvelope(timestamp: bigint, words: bigint[], recipient?: s
     : c.encode(["uint256", "uint256[8]"], [timestamp, words]);
 }
 
+// ---------------------------------------------------------------- World ID (Semaphore v3, depth 30)
+const WORLD_ID_PROVER_DIR = path.join(__dirname, "..", "..", "packages", "world-id");
+const WORLD_ID_ZKEY = path.join(__dirname, "..", "..", ".cache", "semaphore", "30", "semaphore.zkey");
+/** Identity seeds of the local "World ID" tree (mirror of packages/world-id DEFAULT_MEMBERS) */
+export const WORLD_ID_MEMBERS = ["human", "alice", "bob", "carol", "dave"];
+
+export function worldIdArtifactsAvailable(): boolean {
+  return existsSync(WORLD_ID_ZKEY);
+}
+
+export interface WorldIdProof {
+  root: string;
+  nullifierHash: string;
+  signalHash: string;
+  externalNullifierHash: string;
+  identityCommitment: string;
+  memberIndex: number;
+  /** [a0, a1, b01, b00, b11, b10, c0, c1] */
+  proof: string[];
+  /** [root, nullifierHash, signalHash, externalNullifierHash] */
+  publicSignals: string[];
+  provingMs: number;
+}
+
+function worldIdCli(args: string[]): any {
+  const r = spawnSync(path.join(WORLD_ID_PROVER_DIR, "node_modules", ".bin", "tsx"), ["prover/cli.ts", ...args],
+    { cwd: WORLD_ID_PROVER_DIR, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  if (r.status !== 0) throw new Error(`world-id prover failed: ${r.stderr || r.error}`);
+  return JSON.parse(r.stdout);
+}
+
+/** Real Semaphore depth-30 Groth16 proof (subprocess, ~0.5 s) for a member of the local tree, bound to `signal` */
+export function generateWorldIdProof(o: { identity: string; signal: string; externalNullifier: bigint; members?: string[] }): WorldIdProof {
+  const args = ["prove", "--identity", o.identity, "--signal", o.signal, "--external-nullifier", o.externalNullifier.toString()];
+  if (o.members) args.push("--members", o.members.join(","));
+  return worldIdCli(args);
+}
+
+/** Root of the local tree (what the sequencer publishes to the router) */
+export function worldIdTreeRoot(members?: string[]): bigint {
+  return BigInt(worldIdCli(members ? ["root", "--members", members.join(",")] : ["root"]).root);
+}
+
+/** 0x2A type-1 taker args for a World ID proof: [L][0x01][nullifierHash][abi.encode(root, [recipient,] uint256[8])] */
+export function encodeWorldIdProofTakerArgs(p: WorldIdProof, opts: { tamper?: boolean; recipient?: string } = {}): string {
+  const words = p.proof.map(BigInt);
+  if (opts.tamper) words[7] = words[7] ^ 1n;
+  return encodeWorldIdTakerArgs(BigInt(p.nullifierHash), encodeWorldIdProofEnvelope(BigInt(p.root), words, opts.recipient));
+}
+
 /** App-scoped nullifier seed for the Anon Aadhaar adapter */
 export const AEGIS_NULLIFIER_SEED = BigInt(ethers.id("aegis-jit/anon-aadhaar/nullifier-seed")) >> 8n;
 /** World ID: Orb-verified humans are Semaphore group 1 */
@@ -145,6 +196,11 @@ export interface AegisConfig {
   worldIdAction: string;
   /** MockWorldIDRouter root-history expiry in seconds (World ID default: 1 hour) */
   rootHistoryExpiry: number;
+  /**
+   * "mock"      = MockSemaphoreVerifier behind the router (fast; registered statements)
+   * "semaphore" = World ID's vendored SemaphoreVerifier (real BN254 pairing; proofs from packages/world-id)
+   */
+  worldIdBackend: "mock" | "semaphore";
 }
 
 export const DEFAULT_CONFIG: AegisConfig = {
@@ -172,6 +228,7 @@ export const DEFAULT_CONFIG: AegisConfig = {
   worldIdAppId: "app_staging_aegis_jit_mumbai",
   worldIdAction: "aegis-jit-fee-tier",
   rootHistoryExpiry: 3600,
+  worldIdBackend: "mock",
 };
 
 export interface SwapResult {
@@ -183,7 +240,7 @@ export interface SwapResult {
 
 export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   const cfg: AegisConfig = { ...DEFAULT_CONFIG, ...overrides };
-  const [deployer, maker, human, bot, whale] = (await ethers.getSigners()) as Signer[];
+  const [deployer, maker, human, bot, whale, worldHuman] = (await ethers.getSigners()) as Signer[];
   // Deterministic issuer key standing in for the Anon-Aadhaar / World ID trusted setup
   const issuer = new Wallet(ethers.id("aegis-jit/mock-anon-identity-issuer"));
 
@@ -212,10 +269,13 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     cfg.zkBackend === "groth16" ? await groth16.getAddress() : await anonAadhaar.getAddress(),
     AEGIS_NULLIFIER_SEED, cfg.epochDuration, cfg.maxProofAge, cfg.adapterRequiredState, [await forwarder.getAddress()],
   ]);
-  // World ID stack: router mock (groups, root history) -> Semaphore verifier double; adapter = 0x2A type-1 verifier
+  // World ID stack: router mock (groups, root history) -> Semaphore verifier (World ID's real one, or the
+  // soundness double); adapter = 0x2A type-1 verifier
   const semaphoreMock = await deploy<MockSemaphoreVerifier>("MockSemaphoreVerifier", [await deployer.getAddress()]);
+  const semaphoreReal = await deploy<any>("contracts/zk/vendor/world-id/SemaphoreVerifier.sol:SemaphoreVerifier");
+  const semaphoreVerifier = cfg.worldIdBackend === "semaphore" ? semaphoreReal : semaphoreMock;
   const worldIdRouter = await deploy<MockWorldIDRouter>("MockWorldIDRouter", [
-    await semaphoreMock.getAddress(), await deployer.getAddress(), WORLD_ID_GROUP, WORLD_ID_INITIAL_ROOT, cfg.rootHistoryExpiry,
+    await semaphoreVerifier.getAddress(), await deployer.getAddress(), WORLD_ID_GROUP, WORLD_ID_INITIAL_ROOT, cfg.rootHistoryExpiry,
   ]);
   const worldIdAdapter = await deploy<WorldIDAdapter>("WorldIDAdapter", [
     await worldIdRouter.getAddress(), WORLD_ID_GROUP, cfg.worldIdAppId, cfg.worldIdAction, [await forwarder.getAddress()],
@@ -241,7 +301,9 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     zkVerifier: cfg.zkBackend === "ecdsa" ? await verifier.getAddress() : await adapter.getAddress(),
     worldIdAdapter: await worldIdAdapter.getAddress(),
     worldIdRouter: await worldIdRouter.getAddress(),
-    semaphoreVerifier: await semaphoreMock.getAddress(),
+    semaphoreVerifier: await semaphoreVerifier.getAddress(),
+    semaphoreMock: await semaphoreMock.getAddress(),
+    semaphoreReal: await semaphoreReal.getAddress(),
     maker: await maker.getAddress(),
   };
   const tokenA = BigInt(addr.usdc) < BigInt(addr.weth) ? addr.usdc : addr.weth;
@@ -303,7 +365,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   const orderHash: string = await router.hash(order);
 
   // ---- Takers
-  for (const t of [human, bot, whale]) {
+  for (const t of [human, bot, whale, worldHuman]) {
     const a = await t.getAddress();
     await usdc.mint(a, USDC(2_000_000));
     await weth.connect(t).deposit({ value: WETH(500) });
@@ -358,8 +420,22 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
    */
   async function worldIdArgs(
     taker: string,
-    opts: { person?: string; root?: bigint; recipient?: string; tamper?: boolean } = {},
+    opts: { person?: string; root?: bigint; recipient?: string; tamper?: boolean; members?: string[] } = {},
   ): Promise<string> {
+    if (cfg.worldIdBackend === "semaphore") {
+      // Real proof: `person` is an identity seed in the local tree (default "human"); the deployer
+      // (sequencer) publishes the tree root to the router if it is not the latest one already.
+      const externalNullifier: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
+      const p = generateWorldIdProof({ identity: opts.person ?? "human", signal: taker, externalNullifier, members: opts.members });
+      if (opts.root === undefined) {
+        if ((await worldIdRouter.latestRoot()) !== BigInt(p.root)) {
+          await (await worldIdRouter.connect(deployer).registerRoot(BigInt(p.root))).wait();
+        }
+      } else {
+        p.root = opts.root.toString(); // claim a root the proof was not generated for
+      }
+      return encodeWorldIdProofTakerArgs(p, { tamper: opts.tamper, recipient: opts.recipient });
+    }
     const person = opts.person ?? taker.toLowerCase();
     // stands in for the circuit's Poseidon(externalNullifier, identityNullifier)
     const nullifierHash = BigInt(ethers.solidityPackedKeccak256(["string", "string"], ["aegis-jit/world-id/mock-nullifier", person])) >> 8n;
@@ -415,10 +491,10 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
 
   return {
     cfg, params, order, orderHash, shipReceipt, chainId, issuer,
-    accounts: { deployer, maker, human, bot, whale },
+    accounts: { deployer, maker, human, bot, whale, worldHuman },
     contracts: {
       aqua, weth, usdc, router, hook, strategy, verifier, anonAadhaar, adapter, groth16, pairingVerifier, forwarder,
-      worldIdAdapter, worldIdRouter, semaphoreMock, usdcVault, wethVault, quoter,
+      worldIdAdapter, worldIdRouter, semaphoreVerifier, semaphoreMock, semaphoreReal, usdcVault, wethVault, quoter,
     },
     addr, tokenA,
     zkArgs, worldIdArgs, takerData, quote, swap, vaultAssets, aquaBalances,
