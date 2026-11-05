@@ -19,7 +19,7 @@ import { VolatilitySurgeFeeArgsBuilder } from "./instructions/VolatilitySurgeFee
 ///   [Deadline 0x0D]?                       strategy expiry (omitted if deadline == 0)
 ///   (Aqua balances preloaded by the router — not an opcode)
 ///   ZKIdentityGuard 0x2A                   tier / gate the taker
-///   JITVaultReserves 0x9A                  λ exposure cap + virtual boost (wraps the rest)
+///   JITVaultReserves 0x9A                  λ exposure cap + virtual-offset boost (wraps the rest)
 ///   [JumpIfTokenIn 0x0B → P2]?             two-sided rate floor band (omitted if no floors):
 ///   [RequireMinRate 0x2B (A→B)]?             P1
 ///   [Jump 0x0A → P3]?
@@ -43,6 +43,8 @@ contract AegisJITStrategy {
         uint32 requiredStateCode;    // 0 = any
         uint32 lambdaBps;            // 1e4 = 100%
         uint48 virtualBoostBps;      // 1e4 = 1.0x
+        uint128 allocation0;         // amount of token0 the Maker ships to Aqua (boost anchor)
+        uint128 allocation1;         // amount of token1 the Maker ships to Aqua
         uint64 floor01AmountIn;      // token0 -> token1: maker requires >= In token0 per Out token1
         uint64 floor01AmountOut;
         uint64 floor10AmountIn;      // token1 -> token0
@@ -92,11 +94,12 @@ contract AegisJITStrategy {
         (address tokenA, address tokenB, address vaultA, address vaultB) = zeroToOne
             ? (p.token0, p.token1, p.vault0, p.vault1)
             : (p.token1, p.token0, p.vault1, p.vault0);
+        (uint128 refA, uint128 refB) = zeroToOne ? (p.allocation0, p.allocation1) : (p.allocation1, p.allocation0);
 
         program = bytes.concat(
             p.deadline > 0 ? _ix(AegisOpcodes.DEADLINE, ControlsArgsBuilder.buildDeadline(p.deadline)) : bytes(""),
             _ix(AegisOpcodes.ZK_IDENTITY_GUARD, ZKIdentityGuardArgsBuilder.build(p.zkVerifier, p.zkMode, p.requiredStateCode)),
-            _ix(AegisOpcodes.JIT_VAULT_RESERVES, JITVaultReservesArgsBuilder.build(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps))
+            _ix(AegisOpcodes.JIT_VAULT_RESERVES, JITVaultReservesArgsBuilder.build(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB))
         );
 
         bool hasFloors = (p.floor01AmountIn | p.floor01AmountOut | p.floor10AmountIn | p.floor10AmountOut) != 0;

@@ -17,7 +17,7 @@ Three custom instructions are added to the SwapVM interpreter:
 | Opcode | Name                | Role                                                                  |
 |--------|---------------------|-----------------------------------------------------------------------|
 | `0x2A` | `ZKIdentityGuard`   | Sybil/compliance gate; tiers takers into *verified human* vs *unverified* |
-| `0x9A` | `JITVaultReserves`  | Reads live ERC-4626 backing; enforces per-swap exposure cap λ; virtual depth boost |
+| `0x9A` | `JITVaultReserves`  | Reads live ERC-4626 backing; enforces per-swap exposure cap λ; virtual-offset depth boost |
 | `0x7A` | `VolatilitySurgeFee`| Size- and flow-aware LVR fee; 50% base-fee discount for verified humans |
 
 ## 2. Verified SwapVM facts (from source)
@@ -142,24 +142,29 @@ returns exactly 32 bytes `true`, `revealArray[0] == 1`, and the state code match
   pure in-memory change of the VM's own dispatcher, scoped to this execution, valid in
   static context, and requires no storage.
 
-### 5.2 `0x9A JITVaultReserves` — 50 bytes
+### 5.2 `0x9A JITVaultReserves` — 82 bytes
 | Offset | Size | Field | Meaning |
 |-------:|-----:|-------|---------|
 | 0  | 20 | `address vaultA` | ERC-4626 backing for `tokenA` (lower address) or `0` = use Aqua balance |
 | 20 | 20 | `address vaultB` | ERC-4626 backing for `tokenB` (higher address) or `0` |
 | 40 | 4  | `uint32 lambdaBps` | per-swap exposure cap, `(0, 10000]` (2500 = 25%) |
-| 44 | 6  | `uint48 virtualBoostBps` | virtual depth multiplier, `>= 10000` |
+| 44 | 6  | `uint48 virtualBoostBps` | virtual depth multiplier, `>= 10000` (20000 = 2.0x) |
+| 50 | 16 | `uint128 refA` | Maker's committed Aqua allocation of `tokenA` (boost anchor) |
+| 66 | 16 | `uint128 refB` | Maker's committed Aqua allocation of `tokenB` |
 
-`vaultIn`/`vaultOut` are resolved at runtime from `(vaultA, vaultB)` by comparing
-`tokenIn < tokenOut` (same convention as `MinRateArgsBuilder`), so one order serves both
-swap directions.
+`vaultIn/vaultOut` and `refIn/refOut` are resolved at runtime from the A/B fields by
+comparing `tokenIn < tokenOut` (same convention as `MinRateArgsBuilder`), so one order serves
+both swap directions.
 
 Execution (view-safe: only STATICCALLs, no SSTORE):
 1. For each non-zero vault: `require(vault.asset() == token)`.
 2. `rawOut = vaultOut == 0 ? ctx.swap.balanceOut : vaultOut.convertToAssets(vaultOut.balanceOf(maker))`.
 3. `capOut = min(rawOut * λ / 1e4, ctx.swap.balanceOut)` — never more than λ of the live
    underlying, and never more than Aqua can actually pull.
-4. Pricing reserves (concentration): `balanceIn *= boost/1e4`, `balanceOut *= boost/1e4`.
+4. Concentration via **constant** virtual offsets:
+   `balanceIn += refIn·(boost−1e4)/1e4`, `balanceOut += refOut·(boost−1e4)/1e4`.
+   This is a shifted constant-product curve (a Uniswap-v3-style range): at ship time the
+   book has `boost×` depth, and the curve stays path-independent as Aqua balances evolve.
 5. exactOut: pre-check `amountOut <= capOut`. Then `ctx.runLoop()`.
 6. Post-check `amountOut <= capOut` else `revert JITExposureCapExceeded(amountOut, capOut)`.
 
@@ -206,12 +211,17 @@ unchanged (large human trades are still toxic to the pool).
 4. **Monotonicity** — `amountOut` strictly increases with `amountIn`; average price non-increasing.
 5. **ZK tier differentiation** — verified human gets strictly more out than unverified bot for the same input.
 6. **JIT protection** — no single execution moves more than λ of the Maker's vault-backed `tokenOut`.
+7. **Round-trip safety** — buy-then-sell never returns more than the taker put in.
+
+Fee-math properties (`net` monotone, minimal exactOut inverse, fee cap, pipeline symmetry)
+are additionally fuzzed with Foundry in `test/foundry/SurgeFeeMath.t.sol`.
 
 ## 7. Deviations from the brief (and why)
 
 | Brief | This spec | Reason |
 |-------|-----------|--------|
-| `ctx.balanceIn/Out = raw × λ` each swap | λ is a hard **exposure cap**; pricing uses Aqua book × boost | Re-clamping by λ<1 on every swap re-centres the curve after each trade, so splitting a trade gets a *better* price (worked example: 2×50k USDC → 32.0 WETH vs 1×100k → 28.6 WETH on a 1M/400 book with λ = 25%). That violates invariant 3. Scaling by `boost ≥ 1` re-centres the other way (penalises splits) and is safe. |
+| `ctx.balanceIn/Out = raw × λ` each swap | λ is a hard **exposure cap**; pricing uses the Aqua book + constant boost offsets | Re-clamping by λ<1 on every swap re-centres the curve after each trade, so splitting a trade gets a *better* price (worked example: 2×50k USDC → 32.0 WETH vs 1×100k → 28.6 WETH on a 1M/400 book with λ = 25%). That violates invariant 3. |
+| `virtualBoostBps` as a multiplier on current reserves; 50-byte layout | Boost = constant offsets `(boost−1)·ref`; layout extended by `refA, refB` (82 bytes) | Multiplying the *current* reserves by `boost > 1` on every swap is round-trip exploitable: buy 50k USDC of WETH, sell it straight back → 52.5k USDC (2× boost, 1M/400 book), a 2.5k loss to the Maker before fees. Constant offsets make it a fixed shifted curve (round trip returns exactly 50k). A constant needs an absolute anchor, and no view-safe one exists at runtime, so the Maker's committed allocation is encoded in the args. (Found while implementing; the first draft of this spec used the multiplier.) |
 | Utilization `= amountIn·1e4/balanceIn`, stateless | Utilization measured on **cumulative flow within `decayWindowSec`** with a frozen reference balance | Any stateless convex size-fee is split-gameable (two halves each below threshold dodge the surge). Accumulating flow makes the fee path-independent within the window, which is what invariant 3 needs; `decayWindowSec` becomes the accumulation window. |
 | `BPS = 1e7` | `BPS = 1e9` | Matches `Fee.sol` in the pinned SwapVM. |
 | `RequireMinRate` last | Before the surge fee / swap | MinRate is a wrapping instruction and reverts if amounts are already computed. |

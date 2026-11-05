@@ -44,6 +44,10 @@ export interface AegisStrategyParams {
   requiredStateCode?: number;
   lambdaBps: number;
   virtualBoostBps: number;
+  /** Amount of token0 the Maker ships to Aqua — anchor for the constant virtual offsets. */
+  allocation0: bigint;
+  /** Amount of token1 the Maker ships to Aqua. */
+  allocation1: bigint;
   /** token0 -> token1 floor */
   floor01?: RateFloor;
   /** token1 -> token0 floor */
@@ -77,11 +81,19 @@ export function encodeZKIdentityGuardArgs(verifier: string, mode: number, requir
   return solidityPacked(["address", "uint8", "uint32"], [verifier, mode, requiredStateCode]);
 }
 
-/** 0x9A — 50 bytes: vaultA(20) | vaultB(20) | lambdaBps(4) | virtualBoostBps(6) — A/B sorted by token address */
-export function encodeJITVaultReservesArgs(vaultA: string, vaultB: string, lambdaBps: number, virtualBoostBps: number): string {
+/**
+ * 0x9A — 82 bytes: vaultA(20) | vaultB(20) | lambdaBps(4) | virtualBoostBps(6) | refA(16) | refB(16)
+ * A/B sorted by token address. Virtual offsets = (boost - 1) * ref (constant => path-independent curve).
+ */
+export function encodeJITVaultReservesArgs(
+  vaultA: string, vaultB: string, lambdaBps: number, virtualBoostBps: number, refA: bigint, refB: bigint,
+): string {
   if (lambdaBps <= 0 || lambdaBps > 10_000) throw new Error(`invalid lambdaBps ${lambdaBps}`);
   if (virtualBoostBps < 10_000) throw new Error(`invalid virtualBoostBps ${virtualBoostBps}`);
-  return solidityPacked(["address", "address", "uint32", "uint48"], [vaultA, vaultB, lambdaBps, virtualBoostBps]);
+  return solidityPacked(
+    ["address", "address", "uint32", "uint48", "uint128", "uint128"],
+    [vaultA, vaultB, lambdaBps, virtualBoostBps, refA, refB],
+  );
 }
 
 /** 0x7A — 20 bytes: baseFeeBps(4) | maxSurgeFeeBps(4) | impactThresholdBps(8) | decayWindowSec(4) */
@@ -125,7 +137,7 @@ export class AegisProgramBuilder {
    *  1. Deadline (0x0D)                 — strategy expiry guard (omitted if 0)
    *  2. Aqua balances                   — preloaded by the router (no opcode)
    *  3. ZKIdentityGuard (0x2A)          — tier / gate the taker
-   *  4. JITVaultReserves (0x9A)         — λ exposure cap + virtual boost (wraps the rest)
+   *  4. JITVaultReserves (0x9A)         — λ exposure cap + virtual-offset boost (wraps the rest)
    *  5. RequireMinRate band (0x0B/0x2B/0x0A/0x2B) — two-sided hard floor (omitted if none)
    *  6. VolatilitySurgeFee (0x7A)       — dynamic LVR fee, human discount
    *  7. XYCSwap (0x11)                  — constant product over boosted reserves
@@ -136,12 +148,13 @@ export class AegisProgramBuilder {
     const v0 = p.vault0 ?? ZeroAddress;
     const v1 = p.vault1 ?? ZeroAddress;
     const [vaultA, vaultB] = zeroToOne ? [v0, v1] : [v1, v0];
+    const [refA, refB] = zeroToOne ? [p.allocation0, p.allocation1] : [p.allocation1, p.allocation0];
 
     const parts: string[] = [];
     const deadline = p.deadline ?? 0n;
     if (deadline > 0n) parts.push(ix(AegisOpcodes.DEADLINE, solidityPacked(["uint40"], [deadline])));
     parts.push(ix(AegisOpcodes.ZK_IDENTITY_GUARD, encodeZKIdentityGuardArgs(p.zkVerifier, p.zkMode, p.requiredStateCode ?? 0)));
-    parts.push(ix(AegisOpcodes.JIT_VAULT_RESERVES, encodeJITVaultReservesArgs(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps)));
+    parts.push(ix(AegisOpcodes.JIT_VAULT_RESERVES, encodeJITVaultReservesArgs(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB)));
 
     const f01 = p.floor01 ?? { amountIn: 0n, amountOut: 0n };
     const f10 = p.floor10 ?? { amountIn: 0n, amountOut: 0n };
