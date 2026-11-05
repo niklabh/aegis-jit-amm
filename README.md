@@ -12,42 +12,58 @@ interpreter loop:
 | `0x9A` | **JITVaultReserves** | Reads the Maker's **live** ERC-4626 backing and caps any single execution at **λ** (e.g. 25%) of it. It also adds virtual depth (`boost`) without locking extra capital. View-safe. |
 | `0x7A` | **VolatilitySurgeFee** | Applies a size- and flow-aware LVR fee: base fee below a utilization threshold, surge fee above it, measured on cumulative in-window flow so split trades can't dodge it. Verified humans pay half the base fee. |
 
+It also integrates **zkAadhaar**, an offline Aadhaar Secure-QR scanner/parser/RSA verifier,
+with the official **Anon Aadhaar v2** circuit. A taker proves "over 18, resident of state X"
+with a **real Groth16 (BN254) proof**, verified on-chain via the `ecPairing` precompile (0x08)
+inside `0x2A`, without revealing anything else.
+
+## Judge quick-start
+
 ```bash
-yarn                                     # install
-npx hardhat test                         # 75 Hardhat tests (64 AegisJIT + 8 Anon Aadhaar adapter + 3 template)
-forge test                               # Foundry fuzzing: fee math + adapter (8 properties × 5,000 runs)
-./scripts/start-local-demo.sh            # node + deploy/seed + SwapVM Inspector UI at http://127.0.0.1:5173
-npx hardhat run scripts/demo-mumbai.ts   # 3-minute judge demo (in-process network)
-npx hardhat node & npx hardhat run --network localhost scripts/demo-mumbai.ts   # same, on a real JSON-RPC node
+yarn && (cd packages/zk-aadhaar && npm install) && (cd ui && npm install)
+node packages/zk-aadhaar/prover/fetch-artifacts.mjs   # once: official Anon Aadhaar v2 artifacts, ~620 MB, SHA-256 pinned
+
+npx hardhat test && forge test                        # 91 Hardhat tests (incl. 10 with REAL Groth16 proofs) + 8 Foundry fuzz properties
+npx hardhat run scripts/demo-mumbai.ts                # CLI demo: real proof in Scenario 1 + ecPairing gas breakdown
+./scripts/start-local-demo.sh                         # node + local prover + seed + UI at http://127.0.0.1:5173
+cd ui && npm run smoke                                # headless: QR → RSA → Groth16 → on-chain verify → swap() (stack running)
 ```
+
+Without the artifacts, the real-proof tests **skip with a warning** and the demo falls back to
+the mock verifier, with a banner saying so. Each real proof takes ~13 s in Node and a few GB of
+RAM.
 
 ---
 
 ## Architecture
 
 ```
-                         ┌──────────────────────────── AegisSwapVMRouter ───────────────────────────┐
- Taker ──swap/quote────▶ │ SwapVM core: order hash · Aqua safeBalances preload · runLoop · settle   │
- (takerData: ZK proof)   │   ctx.vm.dispatch = _dispatch  ──(0x2A verified)──▶ _dispatchVerifiedHuman│
-                         │   ├─ 0x2A ZKIdentityGuard ──staticcall──▶ IZKVerifier (MockAnonIdentity)  │
-                         │   ├─ 0x9A JITVaultReserves ─staticcall──▶ ERC-4626 vaults (live backing)  │
-                         │   ├─ 0x2B RequireMinRate ×2 (two-sided floor via JumpIfTokenIn)           │
-                         │   ├─ 0x7A VolatilitySurgeFee (window state written only when !static)     │
-                         │   └─ AquaOpcodes: Deadline · Jump · XYCSwap · … via _runOpcode             │
-                         └───────────────┬───────────────────────────────────────┬──────────────────┘
-                                         │ AQUA.pull / push (virtual balances)    │ Maker hooks
-                                         ▼                                        ▼
-                                   ┌──────────┐                       ┌──────────────────────┐
-                                   │   Aqua   │◀── ship(strategy) ─── │ Maker EOA            │
-                                   └──────────┘                       │ holds vault SHARES   │
-                                                                      └─────────┬────────────┘
-                                          AegisJITVaultHook:  withdraw amountOut│just before pull
-                                                              deposit  amountIn │just after push
-                                                                                ▼
-                                                              ┌──────────────────────────────┐
-                                                              │ avUSDC  MockERC4626Vault      │
-                                                              │ avWETH  MockERC4626Vault      │
-                                                              └──────────────────────────────┘
+ ┌──────────────────────── client (browser tab + local prover on 127.0.0.1) ────────────────────────┐
+ │ Aadhaar Secure QR ─▶ zkAadhaar: digits → BigInt → gunzip → fields | photo | 256-B signature      │
+ │   (upload / test QR)   RSA-2048 PKCS#1 v1.5 check vs pinned UIDAI certs (Web Crypto, in-browser) │
+ │                     ─▶ prover: Anon Aadhaar v2 circuit (RSA + SHA-256 in-circuit) · snarkjs      │
+ │                         public: pubkeyHash, epoch nullifier, timestamp, ageAbove18, state, seed, │
+ │                                 signalHash = keccak(taker) >> 3      → groth16Proof uint256[8]   │
+ │                     ─▶ takerData = takerTraits ‖ [len ‖ nullifier ‖ revealArray ‖ (ts, proof)]   │
+ └───────────────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                                     │ swap / quote
+ ┌──────────────────────────────── AegisSwapVMRouter (SwapVM + AquaOpcodes) ───────────────────────┐
+ │ 0x0D Deadline                                                                                    │
+ │ 0x2A ZKIdentityGuard ─staticcall▶ AnonAadhaarAdapter (epoch seed, freshness, signal, forwarders) │
+ │      │                              └▶ AnonAadhaarGroth16Verifier (trust root = RSA key hash)    │
+ │      │                                   └▶ Verifier.sol ── ecMul/ecAdd ── ecPairing (0x08)      │
+ │      └─ verified ⇒ ctx.vm.dispatch := _dispatchVerifiedHuman; nullifier → beneficiary binding     │
+ │ 0x9A JITVaultReserves ─staticcall▶ ERC-4626 vaults (λ cap on live backing, virtual offsets)      │
+ │ 0x0B/0x2B/0x0A RequireMinRate band (two-sided floor)                                             │
+ │ 0x7A VolatilitySurgeFee (rolling-window surge; human base-fee discount via dispatcher)           │
+ │ 0x11 XYCSwap                                                                                     │
+ └──────────────┬──────────────────────────────────────────────────────────────┬────────────────────┘
+                │ AQUA.pull / push (virtual balances)                           │ Maker hooks
+                ▼                                                               ▼
+          ┌──────────┐ ◀── ship(strategy) ── Maker EOA (holds vault shares) ── AegisJITVaultHook:
+          │   Aqua   │                                                          withdraw amountOut JIT,
+          └──────────┘                                                          re-deposit amountIn
+                                                    avUSDC / avWETH MockERC4626Vault (yield-bearing)
 ```
 
 **Program** (compiled identically by `src/aegisProgramBuilder.ts` and `contracts/AegisJITStrategy.sol`):
@@ -150,16 +166,29 @@ the verified-human dispatcher makes the tier tests fail.
 - `0x9A` reads `convertToAssets(balanceOf(maker))` live. Vault yield raises the exposure cap
   automatically, and a Maker withdrawal shrinks it immediately, with no re-configuration.
 
-### Anon Aadhaar (identity)
-- `contracts/zk/AnonAadhaarAdapter.sol` implements `IZKVerifier` over the deployed Anon
-  Aadhaar verifier (`verifyAnonAadhaarProof`). It binds `signal = uint160(taker)`, enforces
-  proof freshness (24 h), `ageAbove18`, an optional state policy and an app nullifier seed.
-- Opcode `0x2A` binds each nullifier to the first address that swaps with it, so one identity
-  gets one discounted address.
-- Tests and the demo use `MockGroth16AnonAadhaar`. It has the same ABI and accepts a proof
-  only for the exact public signals it was registered for. **No real Groth16 proving or
-  verification runs in this repo.** Wiring the real verifier means deploying the adapter
-  with the official Anon Aadhaar contract address; that is not done or tested here.
+### Anon Aadhaar + zkAadhaar (identity)
+- **zkAadhaar** (`packages/zk-aadhaar`, MIT) handles the Secure QR offline:
+  - scanner (zxing-wasm), decimal → GZIP → field parser (Legacy, V2, V3, V5), JPEG 2000 photo;
+  - RSA-2048 signature check against pinned UIDAI certificates (2017–2029 keys).
+- **Real Groth16.** `packages/zk-aadhaar/prover` builds inputs for the official Anon Aadhaar v2
+  circuit and proves with snarkjs. The artifacts come from Anon Aadhaar's S3 with pinned
+  SHA-256, and the zkey's verification key equals all 26 constants in the official `Verifier.sol`.
+- **On-chain chain of contracts:**
+  - `AnonAadhaarAdapter` (epoch-rotating seed, freshness, `signal = beneficiary`,
+    constructor-fixed forwarders);
+  - → `AnonAadhaarGroth16Verifier` (trust root = circuit hash of the RSA key);
+  - → vendored, unmodified `Verifier.sol` → `ecPairing`.
+- **Measured costs:** `ecPairing` 181,100 gas; whole 0x2A verification ≈ 266k; ZK overhead on a
+  swap ≈ 268k gas.
+- **Test trust root.** Locally, synthetic **V2** QRs are signed by the committed *AegisJIT TEST
+  signer* (`packages/zk-aadhaar/prover/test-signer`, NOT UIDAI), and the verifier's trust root
+  is that key's hash. A verifier pinned to the UIDAI key hash rejects these proofs (tested).
+- `MockGroth16AnonAadhaar` (same ABI; accepts only exactly-registered public signals) is kept
+  where speed matters:
+  - the 5,000-run Foundry fuzz;
+  - fast adapter unit tests that need inputs a real prover can't produce (wrong seeds,
+    malformed bytes, future timestamps).
+- `MockAnonIdentityVerifier` (ECDSA attestation) still backs the opcode invariant suite.
 
 ## CROPS Evaluation (Ethereum Foundation)
 
@@ -168,9 +197,10 @@ the verified-human dispatcher makes the tier tests fail.
   immutable Aqua orders that no operator can pause.
 - Tiered mode (`mode = 1`, the default) **never reverts**. Unverified takers still trade, at
   the bot fee tier, so identity is a discount, not a gate. Strict mode is opt-in per order.
-- No relayer or allow-list sits between the taker and the router. With real Anon Aadhaar,
-  proofs are generated client-side from the user's own Aadhaar QR. (In this repo the prover
-  is mocked.)
+- No relayer or allow-list sits between the taker and the router. Proofs are generated on the
+  user's own machine from their own QR. In this repo that is a local Node prover the browser
+  calls on 127.0.0.1; the QR never goes to a remote server. Anon Aadhaar also supports fully
+  in-browser proving, but it needs the 612 MB zkey in the browser, which isn't wired here.
 
 **Open source**
 - Source for every component is in this repo. Licences are split (see
@@ -253,7 +283,7 @@ and vault balances before and after each one:
 
 | Scenario | Result |
 |---|---|
-| 1 · Verified human, 5,000 USDC → WETH | `0x2A` pass → 0.15% fee, better fill than a bot; quote == swap |
+| 1 · Verified human, 5,000 USDC → WETH | **real** Groth16 proof from a signed test QR (~13 s) → `0x2A` pass on-chain (ecPairing 181,100 gas) → 0.15% fee vs 0.30% for a bot; quote == swap (0 wei) |
 | 2 · Unverified bot, 50,000 USDC → WETH | `0x7A` surge: 150 USDC base + 420 USDC surge (1.14% effective) |
 | 3 · Toxic whale, 500,000 USDC → WETH | **reverted** by `0x9A` (`JITExposureCapExceeded`); vault untouched, 75% structurally out of reach |
 | 4 · Split attack, 5 × 10,000 vs 1 × 50,000 USDC | fresh window, snapshot/revert A/B: split pays **the same** 503.40 USDC fee and gets 0.0011 WETH **less**; a stateless fee would have charged 150 USDC |
@@ -269,13 +299,18 @@ contracts/
   AegisSwapVMRouter.sol        router: SwapVM + AquaOpcodes + MinRate + AegisJIT opcodes
   AegisJITStrategy.sol         on-chain program/order builder
   AegisJITVaultHook.sol        JIT withdraw/deposit Maker hook
+  AegisZKForwarder.sol         reference trusted forwarder (recipient == msg.sender)
   instructions/                ZKIdentityGuard · JITVaultReserves · VolatilitySurgeFee
   interfaces/IZKVerifier.sol
-  zk/                          IAnonAadhaar · AnonAadhaarAdapter
+  zk/                          IAnonAadhaar · AnonAadhaarAdapter · AnonAadhaarGroth16Verifier
+  zk/vendor/anon-aadhaar/      Verifier.sol (official, unmodified, GPL-3.0)
   libs/AegisOpcodes.sol
   mocks/                       MockAnonIdentityVerifier · MockGroth16AnonAadhaar · MockERC4626Vault · StaticQuoter
 src/aegisProgramBuilder.ts     TypeScript SDK (programs, orders, ZK taker payloads)
+packages/zk-aadhaar/           zkAadhaar QR scanner/parser/RSA verifier (Next.js app + libs)
+  prover/                      Anon Aadhaar inputs + snarkjs prover · CLI · 127.0.0.1 service · test signer
 test/AegisJIT.test.ts          invariant suite      test/AnonAadhaarAdapter.test.ts
+test/RealGroth16Swap.test.ts   real proofs → swap   test/EpochNullifiers.test.ts (epochs, forwarders)
 test/foundry/                  fee-math + adapter fuzzing
 scripts/demo-mumbai.ts         judge CLI demo       scripts/seed-local.ts · start-local-demo.sh
 ui/                            SwapVM Inspector     docs/SPEC.md    spec & deviations
@@ -288,8 +323,15 @@ The original template (`AquaAMM`, `MockTaker`, `deploy/`) is unchanged and its t
 - The surge window resets at expiry, so a patient taker who splits across windows pays less
   surge.
 - λ caps a *single* execution. Cumulative exposure is bounded by the Aqua allocation.
-- `MockAnonIdentityVerifier` is a trusted-issuer stand-in. Production needs a real ZK
-  verifier adapter.
+- Local deployments trust the AegisJIT TEST signer. Production must deploy
+  `AnonAadhaarGroth16Verifier` with the UIDAI key hash. Upstream only publishes the 2021 key's
+  hash, so the hash for the current (2026) key has to be computed with the circuit and checked
+  independently.
+- The circuit parses the **V2** layout (≤ 1536 padded bytes). Whether current V5 e-Aadhaar QRs
+  fit hasn't been verified. zkAadhaar parses them, but proving may fail.
+- Proving runs in a local Node process, not inside the browser.
+- Each epoch needs a fresh proof. Proofs also expire after 24 h because the QR timestamp
+  must be recent.
 - Not audited.
 
 ## Disclaimer

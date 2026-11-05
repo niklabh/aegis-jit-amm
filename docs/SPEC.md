@@ -286,6 +286,51 @@ contract keeps the template's settings. `AegisOpcodes` lives in its own file so
 instruction logic into external libraries was rejected: it would add DELEGATECALL overhead
 and ABI-encoding glue per opcode, and the optimizer alone recovers about 8.5 KB.
 
+## 7b. Merged zkAadhaar → Anon Aadhaar → 0x2A pipeline
+
+```
+Secure QR (decimal) ─▶ BigInt → bytes → GUNZIP ─▶ signedData ‖ 256-B RSA signature
+   │  zkAadhaar (packages/zk-aadhaar/src/lib/aadhaar): parse fields + photo; RSA-2048 PKCS#1 v1.5 / SHA-256
+   │  against pinned UIDAI certificates (Web Crypto)            ← browser (UI) or Node (tests / demo)
+   ▼
+circuit inputs (prover/anon-aadhaar.ts, mirrors @anon-aadhaar/core 2.4.3 generateArgs):
+   qrDataPadded = SHA-256-pad(signedData) zero-filled to 1536 B, 18 delimiter indices,
+   signature / pubKey as 17 × 121-bit words, nullifierSeed, signalHash = keccak(uint256 signal) >> 3,
+   reveal flags (ageAbove18, state)
+   ▼  snarkjs groth16.fullProve(aadhaar-verifier.wasm, circuit_final.zkey)   ~13 s, Node, local only
+public signals [pubkeyHash, nullifier, timestamp, ageAbove18, gender, pincode, state, nullifierSeed, signalHash]
+   ▼  packed proof [a0, a1, b01, b00, b11, b10, c0, c1]
+0x2A taker args = [uint16 L][nullifier][revealArray[4]][abi.encode(timestamp, [recipient,] uint256[8])]
+   ▼
+AnonAadhaarAdapter (seed = keccak(APP_SEED, epoch) mod p; 0 ≤ now − ts ≤ 24 h; age; state; signal = beneficiary)
+   → AnonAadhaarGroth16Verifier (pubkeyHash trust root) → Verifier.sol (ecMul/ecAdd + ecPairing 0x08)
+```
+
+**Artifact integrity.** `fetch-artifacts.mjs` pins the SHA-256 of `circuit_final.zkey` (612 MB),
+`aadhaar-verifier.wasm` and `vkey.json`. The verification key exported from the zkey equals
+`vkey.json`, and all 26 curve constants appear in the vendored `Verifier.sol`.
+
+**Measured gas** (Hardhat, cancun):
+
+| Item | Gas |
+|---|---:|
+| `ecPairing` STATICCALL (4 pairs) | 181,100 (= EIP-1108 181,000 + 100 warm access) |
+| 0x2A verifier call (adapter + Groth16 incl. pairing) | ≈ 265,900 |
+| swap with proof vs the same swap without | ≈ 613,100 vs ≈ 344,700 (overhead ≈ 268,400) |
+
+**Deviations from the Phase-3 brief**
+
+| Brief | Implementation | Reason |
+|---|---|---|
+| zkAadhaar provides the prover | zkAadhaar provides scanning, parsing and RSA. Proving uses the official Anon Aadhaar v2 circuit and artifacts | zkAadhaar contains no circuit. Writing a new RSA-in-circuit circuit plus a trusted setup was out of scope, and a circuit without in-circuit RSA would prove nothing about UIDAI |
+| Client-side prover in the browser | Local Node prover service on 127.0.0.1, called by the browser | User's choice: avoids loading the 612 MB zkey into a browser during a 3-minute demo. The UI states that the QR is sent to the local process |
+| "Never leaves the browser" | Parsing and RSA stay in the browser. The proving step sends the QR to the local prover | Accuracy |
+| Real Aadhaar QR → proof | Synthetic **V2** QRs signed by a committed TEST key | The circuit parses V2. Real QRs need the UIDAI trust root, and must not be committed |
+| `nullifierEpochOwner[epoch][nullifier]` | Epoch-derived `nullifierSeed`, so the nullifier itself rotates; binding stays keyed by nullifier | An epoch-keyed map over a static nullifier still links every wallet through the nullifier in calldata |
+| `requiredStateCode` in `revealArray[2]` | `revealArray[3]` (state); full-width adapter `REQUIRED_STATE` | Anon Aadhaar order is [age, gender, pincode, state], and state is a packed string that doesn't fit `uint32` |
+| `MockGroth16AnonAadhaar` only for Foundry fuzz | Also kept for fast adapter unit tests; every end-to-end path uses real proofs | Those unit tests need inputs a real prover can't produce, and ~13 s per proof matters |
+| `Verifier.sol` MIT | Kept GPL-3.0, unmodified | That is its licence (snarkjs template) |
+
 ## 8. Milestones
 
 1. Spec (this file)
@@ -293,3 +338,5 @@ and ABI-encoding glue per opcode, and the optimizer alone recovers about 8.5 KB.
 3. `AegisSwapVMRouter.sol`, `AegisJITStrategy.sol`, `AegisJITVaultHook.sol`, `src/aegisProgramBuilder.ts`
 4. `test/AegisJIT.test.ts` invariant + unit tests
 5. `scripts/demo-mumbai.ts` + README
+6–9. Licensing, Anon Aadhaar adapter + nullifier binding, multi-block demo, SwapVM Inspector UI
+10–13. zkAadhaar merge + real Groth16, epoch nullifiers + forwarders, ZK Pass UI, docs

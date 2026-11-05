@@ -7,7 +7,11 @@
 // MockAnonIdentityVerifier and AegisSwapVMRouter, ships the Maker's self-custodial AegisJIT
 // strategy to Aqua and runs three live on-chain scenarios.
 
-import { deployAegis, USDC, AegisEnv } from "../test/utils/aegisFixture";
+import { existsSync } from "fs";
+import * as path from "path";
+import {
+  deployAegis, USDC, AegisEnv, generateRealProof, encodeRealProofTakerArgs, MAHARASHTRA_PACKED, RealProof,
+} from "../test/utils/aegisFixture";
 import { AegisOpcodes, AegisProgramBuilder, FEE_BPS } from "../src/aegisProgramBuilder";
 
 const { ethers } = require("hardhat");
@@ -107,6 +111,21 @@ async function transferTrace(env: AegisEnv, receipt: any, title: string) {
   grid(["log#", "Token", "From", "To", "Amount"], rows);
 }
 
+/** Gas consumed by the first STATICCALL to `target` in a tx, measured from the opcode trace */
+async function measureStaticCall(txHash: string, target: bigint): Promise<bigint | null> {
+  const t = await ethers.provider.send("debug_traceTransaction", [txHash, { disableMemory: true, disableStorage: true }]);
+  const logs = t.structLogs as Array<{ op: string; gas: number; depth: number; stack: string[] }>;
+  for (let i = 0; i < logs.length - 1; i++) {
+    const l = logs[i];
+    if (l.op === "STATICCALL" && BigInt("0x" + l.stack[l.stack.length - 2].replace(/^0x/, "")) === target) {
+      const next = logs.slice(i + 1).find((x) => x.depth === l.depth);
+      return next ? BigInt(l.gas - next.gas) : null;
+    }
+  }
+  return null;
+}
+const n = (v: bigint | null) => (v === null ? "n/a" : Number(v).toLocaleString("en-US"));
+
 async function rpc(method: string, params: unknown[] = []) {
   return ethers.provider.send(method, params);
 }
@@ -116,7 +135,14 @@ async function main() {
   console.log(`${C.bold}${C.magenta}   █▀█ ██▄ █▄█ █ ▄█   █▄█ █ ░█░    1inch Aqua + SwapVM · ETHGlobal Mumbai 2026${C.reset}`);
 
   banner("0 · Deploy & register the Maker's self-custodial strategy");
-  const env = await deployAegis({ zkBackend: "anonAadhaar" });
+  const REAL_ZK = existsSync(path.join(__dirname, "..", ".cache", "anon-aadhaar", "v2.0.0", "circuit_final.zkey"));
+  if (!REAL_ZK) {
+    console.log(`${C.yellow}${C.bold}⚠ Anon Aadhaar artifacts not found — Scenario 1 falls back to the MOCK Groth16 verifier.${C.reset}`);
+    console.log(`${C.yellow}  For real BN254 proofs run: node packages/zk-aadhaar/prover/fetch-artifacts.mjs (~620 MB)${C.reset}`);
+  }
+  const env = await deployAegis(REAL_ZK
+    ? { zkBackend: "groth16", epochDuration: 24 * 3600, adapterRequiredState: MAHARASHTRA_PACKED }
+    : { zkBackend: "anonAadhaar" });
   const { human, bot, whale } = env.accounts;
   const { router } = env.contracts;
 
@@ -125,7 +151,9 @@ async function main() {
     ["AegisSwapVMRouter", env.addr.router],
     ["AegisJITVaultHook", env.addr.hook],
     ["AnonAadhaarAdapter (0x2A verifier)", env.addr.adapter],
-    ["MockGroth16AnonAadhaar", env.addr.anonAadhaar],
+    ...(REAL_ZK
+      ? [["AnonAadhaarGroth16Verifier", env.addr.groth16], ["Verifier.sol (BN254, ecPairing)", env.addr.pairingVerifier]] as [string, string][]
+      : [["MockGroth16AnonAadhaar (fallback)", env.addr.anonAadhaar]] as [string, string][]),
     ["USDC (6 dp)", env.addr.usdc],
     ["WETHMock", env.addr.weth],
     ["avUSDC  MockERC4626Vault", env.addr.usdcVault],
@@ -158,18 +186,49 @@ async function main() {
   {
     const amount = USDC(5_000);
     const hAddr = await human.getAddress();
-    const zk = await env.zkArgs(hAddr);
+    let real: RealProof | null = null;
+    let zk: string;
+    if (REAL_ZK) {
+      process.stdout.write(`${C.dim}  scanning signed test Aadhaar QR → RSA-2048 → Groth16 proving…${C.reset}`);
+      const ts = (await ethers.provider.getBlock("latest"))!.timestamp;
+      real = generateRealProof({ timestamp: ts, seed: await env.contracts.adapter.currentNullifierSeed(), signal: hAddr });
+      zk = encodeRealProofTakerArgs(real);
+      process.stdout.write(` done (${real.proof.provingMs} ms)\n`);
+    } else {
+      zk = await env.zkArgs(hAddr);
+    }
     const data = env.takerData({ tokenIn: env.addr.usdc, zk });
-    const botQuote = await env.quote(bot, amount, env.takerData({ tokenIn: env.addr.usdc }));
+    const botData = env.takerData({ tokenIn: env.addr.usdc });
+    const botQuote = await env.quote(bot, amount, botData);
+    // gasUsed of the identical swap WITHOUT a proof, measured in a snapshot sandbox
+    const snap = await rpc("evm_snapshot");
+    const botGas = (await env.swap(bot, amount, botData)).receipt.gasUsed;
+    await rpc("evm_revert", [snap]);
     const q = await env.quote(human, amount, data);
     const fee = await surgeFeeBreakdown(env, amount, true);
     const before = await env.vaultAssets();
     const s = await env.swap(human, amount, data);
     const after = await env.vaultAssets();
+
+    if (real) {
+      const ps = real.proof.publicSignals;
+      const pairing = await measureStaticCall(s.receipt.hash, 8n);
+      const adapterGas = await measureStaticCall(s.receipt.hash, BigInt(env.addr.adapter));
+      table("Real ZK pipeline (zkAadhaar → Anon Aadhaar v2 circuit → BN254 on-chain)", [
+        ["1 · Secure QR", `${real.qr.version} layout · decompressed · RSA-2048 ${real.qr.rsa.status === "untrusted-key" ? "valid (AegisJIT TEST signer, not UIDAI)" : real.qr.rsa.status}`],
+        ["2 · Groth16 proof", `${real.proof.provingMs.toLocaleString()} ms (snarkjs, Node) · 8 × uint256`],
+        ["    public signals", `ageAbove18=${ps.ageAbove18} · state=${real.proof.stateText} · gender/pincode hidden · epoch nullifier ${short("0x" + BigInt(ps.nullifier).toString(16))}`],
+        ["    signal", `keccak(${short(hAddr)}) >> 3 — bound to this taker`],
+        ["3 · on-chain verify", `0x2A → AnonAadhaarAdapter → AnonAadhaarGroth16Verifier → Verifier.sol → ecPairing 0x08`],
+        ["gas · ecPairing (0x08)", `${n(pairing)}  (measured; EIP-1108 45,000 + 4×34,000 = 181,000, +100 warm access)`],
+        ["gas · 0x2A verifier call", `${n(adapterGas)}  (adapter + Groth16: ecMul/ecAdd for 9 public inputs + pairing)`],
+        ["gas · swap with proof", `${n(s.receipt.gasUsed)}  vs  ${n(botGas)} same swap without proof  →  ZK overhead ${n(s.receipt.gasUsed - botGas)}`],
+      ]);
+    }
     table("0x2A ZK pass → 0x7A human tier (50% base-fee discount) → settled via Aqua", [
-      ["proof", `Anon Aadhaar Groth16 (mock verifier) · reveal [age>18=1, state=27] · signal = ${short(hAddr)}`],
+      ["proof", real ? `REAL Groth16 (BN254) · signal = ${short(hAddr)}` : `Anon Aadhaar Groth16 (MOCK verifier fallback) · signal = ${short(hAddr)}`],
       ["quote()  (static)", `${fmtWeth(q.amountOut, 6)} WETH`],
-      ["swap()   (executed)", `${fmtWeth(s.amountOut, 6)} WETH  ${s.amountOut === q.amountOut ? C.green + "== quote ✔" + C.reset : C.red + "!= quote" + C.reset}`],
+      ["swap()   (executed)", `${fmtWeth(s.amountOut, 6)} WETH  ${s.amountOut === q.amountOut ? C.green + "== quote ✔ (0 wei)" + C.reset : C.red + "!= quote" + C.reset}`],
       ["same trade as unverified bot", `${fmtWeth(botQuote.amountOut, 6)} WETH  (human gets +${fmtWeth(q.amountOut - botQuote.amountOut, 6)} WETH)`],
       ["fee charged", `${fmtUsdc(fee.total)} USDC  (${pct(fee.total, amount, 3)})  ${fee.expectedOut === s.amountOut ? C.green + "off-chain model == on-chain ✔" + C.reset : C.red + "model mismatch" + C.reset}`],
       ["tx / gas", `${short(s.receipt.hash)}  /  ${s.receipt.gasUsed}`],
@@ -177,7 +236,7 @@ async function main() {
       ["avWETH (Maker)", `${fmtWeth(before.weth)}  →  ${fmtWeth(after.weth)}   (−${fmtWeth(before.weth - after.weth)} withdrawn JIT)`],
     ]);
     await transferTrace(env, s.receipt, "Scenario 1 settlement: JIT withdraw → Aqua pull → taker push → JIT re-deposit");
-    results.push({ name: "1 Human retail", tier: C.green + "ZK verified" + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
+    results.push({ name: "1 Human retail", tier: C.green + (real ? "Groth16 ✔" : "ZK (mock)") + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
       price: fmtUsdc(amount * 10n ** 18n / s.amountOut), fee: pct(fee.total, amount, 3), gas: s.receipt.gasUsed.toString(), hash: short(s.receipt.hash), status: C.green + "filled" + C.reset });
   }
 
