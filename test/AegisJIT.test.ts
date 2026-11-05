@@ -56,7 +56,8 @@ describe("AegisJIT", function () {
       const solidity = await env.contracts.strategy.buildOrder({
         maker: p.maker, token0: p.token0, token1: p.token1,
         vault0: p.vault0!, vault1: p.vault1!, jitHook: p.jitHook!, deadline: p.deadline!,
-        zkVerifier: p.zkVerifier, zkMode: p.zkMode, requiredStateCode: p.requiredStateCode ?? 0,
+        zkVerifierTypes: p.zkVerifierTypes!, worldIdVerifier: p.worldIdVerifier!, aadhaarVerifier: p.aadhaarVerifier!,
+        zkMode: p.zkMode, requiredStateCode: p.requiredStateCode ?? 0,
         lambdaBps: p.lambdaBps, virtualBoostBps: p.virtualBoostBps,
         allocation0: p.allocation0, allocation1: p.allocation1,
         floor01AmountIn: p.floor01!.amountIn, floor01AmountOut: p.floor01!.amountOut,
@@ -81,7 +82,7 @@ describe("AegisJIT", function () {
       }
       expect(seen).to.deep.equal([
         [AegisOpcodes.DEADLINE, 5],
-        [AegisOpcodes.ZK_IDENTITY_GUARD, 25],
+        [AegisOpcodes.ZK_IDENTITY_GUARD, 46],
         [AegisOpcodes.JIT_VAULT_RESERVES, 82],
         [AegisOpcodes.JUMP_IF_TOKEN_IN, 22],
         [AegisOpcodes.REQUIRE_MIN_RATE_1D, 16],
@@ -304,7 +305,8 @@ describe("AegisJIT", function () {
       const bot = await env.quote(env.accounts.bot, USDC(5_000), await td(env, "bot", env.addr.usdc));
 
       const under18: RevealArray = [0n, ...MUMBAI_HUMAN_REVEAL.slice(1)] as RevealArray;
-      const forged = ethers.solidityPacked(["uint16", "bytes"], [160 + 65, ethers.concat([
+      const forged = ethers.solidityPacked(["uint16", "bytes"], [1 + 160 + 65, ethers.concat([
+        "0x02", // verifierType = ZK Aadhaar
         ethers.zeroPadValue("0x01", 32),
         ...MUMBAI_HUMAN_REVEAL.map((v) => ethers.zeroPadValue(ethers.toBeHex(v), 32)),
         await ethers.Wallet.createRandom().signMessage("forged"),

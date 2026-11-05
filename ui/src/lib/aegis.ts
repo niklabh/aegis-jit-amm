@@ -37,13 +37,17 @@ export interface ProverResult {
   };
 }
 
-/** 0x2A taker payload: [uint16 L][nullifier][revealArray[4]][abi.encode(timestamp, uint256[8])] */
+/** 0x2A proof types (selector byte at the start of the taker payload) */
+export const ZK_TYPE_WORLD_ID = 1;
+export const ZK_TYPE_AADHAAR = 2;
+
+/** 0x2A ZK Aadhaar taker payload: [uint16 L][0x02][nullifier][revealArray[4]][abi.encode(timestamp, uint256[8])] */
 export function encodeZkPayload(r: ProverResult): Hex {
   const ps = r.proof.publicSignals;
   const envelope = proofEnvelope(r);
   const body = encodePacked(
-    ["uint256", "uint256", "uint256", "uint256", "uint256", "bytes"],
-    [BigInt(ps.nullifier), BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state), envelope],
+    ["uint8", "uint256", "uint256", "uint256", "uint256", "uint256", "bytes"],
+    [ZK_TYPE_AADHAAR, BigInt(ps.nullifier), BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state), envelope],
   );
   return encodePacked(["uint16", "bytes"], [size(body), body]);
 }
@@ -300,9 +304,16 @@ export function disassemble(program: Hex, cfgDecimals?: { tokenA: Address; usdc:
       case 0x0d: f.name = "Deadline"; f.fields.push(["deadline", new Date(Number(uint(b, a, a + 5)) * 1000).toISOString()]); break;
       case 0x2a: {
         f.name = "ZKIdentityGuard"; f.kind = "zk";
-        const mode = b[a + 20];
-        const st = uint(b, a + 21, a + 25);
-        f.fields.push(["verifier", addr(b, a)], ["mode", mode === 0 ? "0 · strict gate" : "1 · tiered retail"], ["requiredStateCode", st === 0n ? "0 · any" : st.toString()]);
+        const types = b[a], mode = b[a + 1];
+        const st = uint(b, a + 2, a + 6);
+        const typeLabel = types === 1 ? "1 · World ID" : types === 2 ? "2 · ZK Aadhaar" : types === 3 ? "3 · World ID or ZK Aadhaar" : `${types} · invalid`;
+        f.fields.push(
+          ["verifierTypes", typeLabel],
+          ["mode", mode === 0 ? "0 · strict gate" : "1 · tiered retail"],
+          ["requiredStateCode", st === 0n ? "0 · any" : st.toString()],
+          ["worldIdVerifier", types & 1 ? addr(b, a + 6) : "— (not accepted)"],
+          ["aadhaarVerifier", types & 2 ? addr(b, a + 26) : "— (not accepted)"],
+        );
         break;
       }
       case 0x9a: {

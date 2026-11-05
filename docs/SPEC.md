@@ -16,7 +16,7 @@ Three custom instructions are added to the SwapVM interpreter:
 
 | Opcode | Name                | Role                                                                  |
 |--------|---------------------|-----------------------------------------------------------------------|
-| `0x2A` | `ZKIdentityGuard`   | Sybil/compliance gate; tiers takers into *verified human* vs *unverified* |
+| `0x2A` | `ZKIdentityGuard`   | Sybil/compliance gate with a modular verifier router (World ID **or** ZK Aadhaar proofs); tiers takers into *verified human* vs *unverified* |
 | `0x9A` | `JITVaultReserves`  | Reads live ERC-4626 backing; enforces per-swap exposure cap λ; virtual-offset depth boost |
 | `0x7A` | `VolatilitySurgeFee`| Size- and flow-aware LVR fee; 50% base-fee discount for verified humans |
 
@@ -61,7 +61,8 @@ actually ships sources under `src/` and that import file does not exist.)
                          ┌──────────────────────────── AegisSwapVMRouter ───────────────────────────┐
  Taker ──swap/quote────▶ │ SwapVM core (hash, Aqua safeBalances preload, runLoop, settlement)       │
  (takerData: ZK proof)   │   ctx.vm.dispatch = _dispatch ──or── _dispatchVerifiedHuman              │
-                         │   ├─ 0x2A ZKIdentityGuard ─staticcall─▶ IZKVerifier (MockAnonIdentity)   │
+                         │   ├─ 0x2A ZKIdentityGuard ─staticcall─▶ IZKVerifier: WorldIDAdapter (type 1) │
+                         │   │                                      │ AnonAadhaarAdapter (type 2)    │
                          │   ├─ 0x9A JITVaultReserves ─staticcall─▶ ERC-4626 vaults (live backing)  │
                          │   ├─ 0x2B RequireMinRate (SwapVM MinRate)                                 │
                          │   ├─ 0x7A VolatilitySurgeFee (window state: write only when !static)     │
@@ -95,7 +96,7 @@ It can only move the Maker's assets between the Maker's wallet and the Maker's v
 |---|-------------|--------|-------|
 | 1 | `Deadline` | `0x0D` | optional (deadline = 0 → omitted) |
 | 2 | Aqua balances | — | implicit: preloaded by `swap()`/`quote()` from `AQUA.safeBalances` |
-| 3 | `ZKIdentityGuard` | `0x2A` | consumes ZK payload from taker `instructionsArgs` |
+| 3 | `ZKIdentityGuard` | `0x2A` | consumes a typed ZK payload (World ID or ZK Aadhaar) from taker `instructionsArgs` |
 | 4 | `JITVaultReserves` | `0x9A` | wraps the rest of the program; post-checks exposure cap |
 | 5 | `JumpIfTokenIn` / `RequireMinRate` ×2 / `Jump` | `0x0B`,`0x2B`,`0x0A` | optional two-sided rate floor (one MinRate per direction) |
 | 6 | `VolatilitySurgeFee` | `0x7A` | wraps the swap instruction |
@@ -118,65 +119,111 @@ The floor protects the Maker against selling below / buying above a hard price
 
 All integers big-endian, tightly packed (`abi.encodePacked`).
 
-### 5.1 `0x2A ZKIdentityGuard` — 25 bytes
+### 5.1 `0x2A ZKIdentityGuard` — 46 bytes (modular verifier router)
 | Offset | Size | Field | Meaning |
 |-------:|-----:|-------|---------|
-| 0  | 20 | `address verifier` | `IZKVerifier` implementation |
-| 20 | 1  | `uint8 mode` | `0` = Strict gate, `1` = Tiered retail |
-| 21 | 4  | `uint32 requiredStateCode` | `0` = any; else `revealArray[3]` must equal it |
+| 0  | 1  | `uint8 verifierTypes` | accepted proof types, bitmask: `0x01` World ID, `0x02` ZK Aadhaar, `0x03` either |
+| 1  | 1  | `uint8 mode` | `0` = Strict gate, `1` = Tiered retail |
+| 2  | 4  | `uint32 requiredStateCode` | `0` = any; else Aadhaar `revealArray[3]` must equal it (type 2 only) |
+| 6  | 20 | `address worldIdVerifier` | `IZKVerifier` for type 1 (`WorldIDAdapter`); must be zero iff bit `0x01` is unset |
+| 26 | 20 | `address aadhaarVerifier` | `IZKVerifier` for type 2 (`AnonAadhaarAdapter`); must be zero iff bit `0x02` is unset |
 
-**Taker args** (consumed via `tryChopTakerArgs`):
-`[uint16 L][nullifier:32][revealArray[0..3]: 4×32][proof: L−160]`.
-Empty/short payload ⇒ "no proof". `revealArray` follows the Anon-Aadhaar convention
-`[ageAbove18, gender, pincode, state]`.
+Both builders (`ZKIdentityGuardArgsBuilder.build`, `encodeZKIdentityGuardArgs`) reject
+`verifierTypes ∉ {1,2,3}` and any verifier slot that disagrees with its bit, so the encoding is
+canonical. The brief asked for a single `verifierType` selector byte (1 = World ID, 2 = ZK Aadhaar);
+making it a bitmask keeps those two values and adds `3`, which is what lets one order serve both
+pathways — the whole point of the dual verification.
 
-`IZKVerifier.verifyProof(address taker, uint256 nullifier, uint256[4] calldata revealArray, bytes calldata proof) external view returns (bool)`
-is invoked with a low-level **STATICCALL** binding the proof to `ctx.query.taker`
-(prevents a bot replaying a human's proof). A human is *verified* iff the call succeeds,
-returns exactly 32 bytes `true`, `revealArray[0] == 1`, and the state code matches.
+**Taker args** (consumed via `tryChopTakerArgs`), with the proof type as the first payload byte:
+
+```
+[uint16 L][verifierType:1][nullifier:32][revealArray: 4×32 — type 2 only][proof: rest]
+```
+
+| Type | `nullifier` | `revealArray` | `proof` envelope | `L` |
+|---|---|---|---|---:|
+| `0x01` World ID | World ID `nullifierHash` | absent (zeros are passed to the adapter) | `abi.encode(uint256 merkleRoot, uint256[8] proof)` 288 B, or `abi.encode(merkleRoot, address recipient, uint256[8])` 320 B via a trusted forwarder | 321 / 353 |
+| `0x02` ZK Aadhaar | Anon Aadhaar nullifier (epoch-rotating) | `[ageAbove18, gender, pincode, state]` | `abi.encode(uint256 timestamp, uint256[8])` 288 B, or `(timestamp, recipient, uint256[8])` 320 B | 449 / 481 |
+
+Empty/short payload ⇒ "no proof". A type the Maker does not accept (`type & verifierTypes == 0`)
+⇒ "no proof". Both cases follow the mode rules below; nothing reverts in tiered mode.
+
+**Execution.** `0x2A` chops the payload, selects the adapter for the type, runs the type's cheap
+public-input policy first (type 2: `revealArray[0] == 1`, state code), then STATICCALLs
+`IZKVerifier.verifyProof(ctx.query.taker, nullifier, revealArray, proof) → (bool ok, address beneficiary)`.
+A taker is *verified* iff the call succeeds, returns exactly 64 bytes with `ok == 1`, and the
+nullifier binding (below) allows it. The verifier interface is unchanged, so the World ID adapter
+and the Anon Aadhaar adapter are interchangeable from the opcode's point of view.
 
 * Mode 0 (Strict): not verified ⇒ `revert ZKVerificationFailed()`.
 * Mode 1 (Tiered): never reverts; not verified ⇒ continue as unverified.
-* Verified (either mode) ⇒ `ctx.vm.dispatch` is switched to the router's
-  `_dispatchVerifiedHuman`, which routes `0x7A` with `verifiedHuman = true`. This is a
-  pure in-memory change of the VM's own dispatcher, scoped to this execution, valid in
-  static context, and requires no storage.
+* Verified (either mode, either proof type) ⇒ `ctx.vm.dispatch` is switched to the router's
+  `_dispatchVerifiedHuman`, which routes `0x7A` with `verifiedHuman = true` (base fee halved:
+  0.30% → 0.15% in the demo order). This is the "human-verified flag in transient state": it lives
+  in the VM's in-memory `Context` for this execution only. It is valid under STATICCALL (`quote()`),
+  cannot leak across swaps, and needs no `TSTORE`, which would revert inside the `view` `quote()`.
 
-**Nullifier binding (anti-Sybil).** After a successful proof check, 0x2A looks up
-`nullifierTaker[verifier][nullifier]`. If it is unbound, the first **swap** binds it to
-`ctx.query.taker` (written only when `!isStaticContext`). If it is bound to a different
-taker, the taker is treated as unverified. One Aadhaar identity therefore gets one
-discounted address.
+**Nullifier binding (anti-Sybil), per verifier.** After a successful proof check, 0x2A looks up
+`nullifierTaker[verifier][nullifier]`. If unbound, the first **swap** binds it to the beneficiary
+(written only when `!isStaticContext`). If bound to another beneficiary, the taker is unverified.
+Keying by verifier keeps the two schemes in separate namespaces.
+* World ID: `nullifierHash = Poseidon(externalNullifier, identityNullifier)` is stable per human per
+  (app, action), so this is **one discounted address per human** for the lifetime of the adapter.
+  World ID's own template marks a nullifier as "used" once; a trading discount needs the human to
+  keep trading, so the binding is to an address, not a one-shot flag.
+* ZK Aadhaar with an epoch-rotating `AnonAadhaarAdapter`: the nullifier changes every epoch, so
+  this is **one address per human per epoch**, unlinkable across epochs (unchanged).
 
-**Production verifier: `contracts/zk/AnonAadhaarAdapter.sol`.** It implements `IZKVerifier`
-over the deployed Anon Aadhaar contract:
+**World ID adapter: `contracts/zk/WorldIDAdapter.sol`** (type 1). It implements `IZKVerifier` over
+the World ID Router (`contracts/zk/world-id/IWorldID.sol`, the 6-argument router entry point,
+declared `view`):
+`verifyProof(root, groupId, signalHash, nullifierHash, externalNullifierHash, uint256[8] proof)`.
+- `groupId = 1` (Orb-verified humans). The router reverts on any failure and returns nothing; the
+  adapter wraps it in `try/catch` and returns `false`. It also returns `false` for malformed
+  envelopes and for a router with no code, so it never reverts.
+- **Signal binding:** `signalHash = ByteHasher.hashToField(abi.encodePacked(beneficiary))`, exactly
+  as World ID's on-chain template hashes an address signal and as IDKit / World App compute it
+  when the `signal` is the user's address. The brief's `uint256(uint160(taker))` is the same
+  binding (the signal *is* the taker's address) expressed in World ID's hashing convention; using
+  the raw integer would reject every proof World App produces. A searcher replaying the takerData
+  from another address presents a different `signalHash` and the pairing check fails.
+- **External nullifier:** `hashToField(abi.encodePacked(hashToField(appId), action))` from the
+  constructor's `appId` / `action` (World ID template). One action = one `nullifierHash` per human.
+- **Forwarders:** the 320-byte envelope `(root, recipient, proof)` binds `signal = recipient` and is
+  honoured only when `taker` is a constructor-fixed trusted forwarder (`AegisZKForwarder`, which
+  enforces `recipient == msg.sender`). `AegisZKForwarder._zkRecipient` understands both payload types.
+- No admin, no setters, no stored roots: root validity is the Router's business.
+
+**Local World ID stack (tests, fuzzing, demo, dashboard).** `contracts/mocks/MockWorldIDRouter.sol`
+mirrors the Router + Identity Manager behaviour an integrator depends on: the 6-argument `view`
+`verifyProof`, `NoSuchGroup(groupId)` for any group but 1, and root history — the latest root is
+always valid, a superseded root stays valid for `ROOT_HISTORY_EXPIRY` (World ID default 1 hour) and
+then `ExpiredRoot()`, an unknown root is `NonExistentRoot()` (same errors as `IBaseWorldID`). Roots
+are published by an `IDENTITY_OPERATOR` (the signup sequencer's role). Proof verification is
+delegated to an `IWorldIDSemaphoreVerifier` (`verifyProof(uint256[8] proof, uint256[4] input)`,
+`input = [root, nullifierHash, signalHash, externalNullifierHash]`), which is either
+`MockSemaphoreVerifier` — a soundness-modelling double that accepts only exactly-registered
+statements, like `MockGroth16AnonAadhaar` — or the vendored, unmodified World ID `SemaphoreVerifier`
+(real BN254 pairing; see §7c). The mock is introduced with this milestone because the adapter's
+tests (invalid roots, expiry, groups) need the router semantics; the brief listed it under the
+demo milestone.
+
+**ZK Aadhaar adapter (type 2): `contracts/zk/AnonAadhaarAdapter.sol`.** Unchanged. It implements
+`IZKVerifier` over the deployed Anon Aadhaar contract:
 `verifyAnonAadhaarProof(nullifierSeed, nullifier, timestamp, signal, revealArray, groth16Proof)`.
 - `proof` bytes = `abi.encode(uint256 timestamp, uint256[8] groth16Proof)` (288 B).
-- `signal = uint256(uint160(taker))`: a searcher replaying takerData from another address fails.
+- `signal = uint256(uint160(beneficiary))` (Anon Aadhaar hashes it internally).
 - Freshness: `0 <= block.timestamp − timestamp <= MAX_PROOF_AGE` (default 24 h).
-- `revealArray[0] == 1`. `revealArray[3]` must equal `REQUIRED_STATE` if that is set; this is
-  full-width because the circuit emits state as a packed string, which does not fit 0x2A's
-  `uint32`. (Anon Aadhaar order is `[ageAbove18, gender, pincode, state]`, so state is index 3.)
-- App scoping via the immutable `NULLIFIER_SEED`. The adapter never reverts; it returns false.
-- Caveat: `taker` is `msg.sender` of `swap()`. If a taker routes through an intermediary
-  contract (aggregator or resolver), the proof must be bound to that contract's address.
+- `revealArray[0] == 1`. `revealArray[3]` must equal `REQUIRED_STATE` if set (full-width because
+  the circuit emits the state as a packed string; Anon Aadhaar order is `[ageAbove18, gender,
+  pincode, state]`).
+- Epoch-rotating nullifiers: `nullifierSeed = keccak256(APP_SEED, epoch) mod p`,
+  `epoch = block.timestamp / epochDuration` (`0` = static seed). The circuit computes
+  `nullifier = Poseidon(nullifierSeed, photo)`, so the nullifier rotates every epoch.
+- Forwarded envelope `(timestamp, recipient, uint256[8])`, trusted forwarders as above.
 
-**Epoch-rotating nullifiers.** `AnonAadhaarAdapter(…, epochDuration, …)` requires the proof's
-`nullifierSeed = uint256(keccak256(abi.encode(APP_SEED, epoch))) % p`, where
-`epoch = block.timestamp / epochDuration` (`epochDuration = 0` means a static `APP_SEED`). The
-circuit computes `nullifier = Poseidon(nullifierSeed, photo)`, so the nullifier rotates every epoch.
-0x2A's binding stays keyed by nullifier, which makes it "one beneficiary per human per epoch".
-Keying a binding map by epoch while keeping a static nullifier would let a user switch wallets,
-but every wallet would still be publicly linked through the same nullifier in calldata.
-
-**Forwarders.** `IZKVerifier.verifyProof` returns `(bool ok, address beneficiary)`, and 0x2A binds
-the nullifier to the beneficiary. The adapter's 320-byte envelope `(timestamp, recipient, uint256[8])`
-binds `signal = recipient`, and is only accepted when `taker` is a constructor-whitelisted
-forwarder. `AegisZKForwarder` enforces `recipient == msg.sender` and `to == msg.sender`.
-
-`MockGroth16AnonAadhaar` is a test double with the same ABI. It models SNARK soundness: a
-proof verifies only for the exact public signals it was registered for.
-`MockAnonIdentityVerifier` (ECDSA attestation) remains for the main invariant suite.
+`MockGroth16AnonAadhaar` is the Aadhaar soundness double; `MockAnonIdentityVerifier` (ECDSA
+attestation, type-2 shaped) still backs the main invariant suite.
 
 ### 5.2 `0x9A JITVaultReserves` — 82 bytes
 | Offset | Size | Field | Meaning |
@@ -265,6 +312,10 @@ are additionally fuzzed with Foundry in `test/foundry/SurgeFeeMath.t.sol`.
 | ZK flag "in ctx" | Dispatcher switch `ctx.vm.dispatch` | `Context` has no free field; transient storage is unusable under STATICCALL (`quote` is `view`). |
 | "MockERC4626Vault seeded with 1M USDC and 400 WETH" | Two `MockERC4626Vault` instances (USDC, WETH) | ERC-4626 vaults are single-asset by definition. |
 | ZK verifier | `MockAnonIdentityVerifier` checks an ECDSA attestation from a trusted issuer over `(chainid, verifier, taker, nullifier, revealArray)` | Deterministic and cryptographically real for local testing (no hardcoded `true`); a Groth16/Anon-Aadhaar adapter implementing `IZKVerifier` drops in without touching the opcode. |
+| 0x2A `verifierType` selector byte (1 World ID, 2 ZK Aadhaar) | bitmask `verifierTypes` (1, 2 or 3) + both adapter addresses; the taker payload carries the single type it supplies | A Maker must be able to accept *both* pathways in one order; a single selector would need two 0x2A instructions fighting over the same taker payload. |
+| World ID signal `uint256(uint160(taker))` | `signalHash = hashToField(abi.encodePacked(taker))` (World ID `ByteHasher`) | Same binding (the signal is the taker's address) in the hashing World App / IDKit actually use; the raw integer would reject every real World ID proof. |
+| `MockWorldIDRouter` in the demo milestone | introduced with the adapter | The adapter's unit tests for invalid / expired roots and groups need the router semantics. |
+| "human-verified flag in transient state" | dispatcher switch in the in-memory `Context` | `quote()` is a `view` (STATICCALL): `TSTORE` would revert there and break quote == swap. |
 
 Known limits (documented, not hidden): the surge window resets at expiry, so a patient
 taker who splits across windows pays less surge; λ caps a *single* execution, while the
@@ -276,7 +327,8 @@ Aqua allocation bounds cumulative exposure.
 |---|---:|---:|
 | Stock `AquaSwapVMRouter`, template optimizer (`runs: 1`, minimal Yul steps `dhfoDgvulfnTUtnIf`) | 24,281 B | 295 B |
 | `AegisSwapVMRouter`, template optimizer | 29,550 B | **−4,974 B (undeployable)** |
-| `AegisSwapVMRouter`, full default Yul optimizer (`runs: 1`, `viaIR`) | **21,021 B** | 3,555 B |
+| `AegisSwapVMRouter`, full default Yul optimizer (`runs: 1`, `viaIR`) | 21,021 B | 3,555 B |
+| `AegisSwapVMRouter` with the modular 0x2A (two verifier slots, typed payloads) | **21,897 B** | 2,679 B |
 
 Size by component in the template build: JIT ≈ 1.5 KB, surge fee ≈ 1.7 KB, ZK guard ≈ 1.3 KB,
 MinRate ≈ 0.4 KB. Splitting `_route` across two dispatchers costs only 32 B. The override in
@@ -331,6 +383,30 @@ AnonAadhaarAdapter (seed = keccak(APP_SEED, epoch) mod p; 0 ≤ now − ts ≤ 2
 | `MockGroth16AnonAadhaar` only for Foundry fuzz | Also kept for fast adapter unit tests; every end-to-end path uses real proofs | Those unit tests need inputs a real prover can't produce, and ~13 s per proof matters |
 | `Verifier.sol` MIT | Kept GPL-3.0, unmodified | That is its licence (snarkjs template) |
 
+## 7c. World ID pathway (dual verification)
+
+```
+World App / IDKit (production)        local tree + prover (tests, demo, dashboard)
+  Orb-verified identity in the         packages/world-id: Semaphore v3 identities, depth-30 Group,
+  World ID tree (depth 30)             snarkjs Groth16 over the public PSE depth-30 artifacts
+      │ signal = taker address, action = "aegis-jit-fee-tier"
+      ▼
+  { merkle_root, nullifier_hash, proof[8] }
+      ▼
+0x2A taker args = [uint16 L][0x01][nullifierHash][abi.encode(merkleRoot, [recipient,] uint256[8])]
+      ▼
+WorldIDAdapter → IWorldID.verifyProof(root, 1, hashToField(address), nullifierHash, extNullifier, proof)   (STATICCALL)
+      ▼ production: World ID Router (World Chain / Ethereum / Optimism …)
+      ▼ local:      MockWorldIDRouter (group 1, root history, 1 h expiry) → SemaphoreVerifier (vendored, real pairing)
+```
+
+The vendored `contracts/zk/vendor/world-id/SemaphoreVerifier.sol` is World ID's own verifier
+(world-id-contracts, MIT; only the import path changed). All 24 verification-key constants in it
+equal the key exported from the public Semaphore depth-30 zkey (SHA-256 `00aaa6d8…a948`), so a
+proof generated locally for a local identity tree verifies against the exact contract World ID
+runs on-chain. The only thing local is the tree: the project plays the signup sequencer and
+publishes its own roots to `MockWorldIDRouter`.
+
 ## 8. Milestones
 
 1. Spec (this file)
@@ -340,3 +416,6 @@ AnonAadhaarAdapter (seed = keccak(APP_SEED, epoch) mod p; 0 ≤ now − ts ≤ 2
 5. `scripts/demo-mumbai.ts` + README
 6–9. Licensing, Anon Aadhaar adapter + nullifier binding, multi-block demo, SwapVM Inspector UI
 10–13. zkAadhaar merge + real Groth16, epoch nullifiers + forwarders, ZK Pass UI, docs
+14. World ID: `WorldIDAdapter`, modular 0x2A (`verifierTypes`, typed payloads), `MockWorldIDRouter`, `test/WorldIDAdapter.test.ts`
+15. World ID backend: `packages/world-id` prover (real Semaphore proofs), vendored verifier, Foundry fuzz, demo scenarios 1A/1B
+16. Dashboard: dual-tab ZK Pass (World ID / ZK Aadhaar), disassembler status, headless smoke for both tabs

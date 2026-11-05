@@ -10,14 +10,15 @@ const { ethers } = require("hardhat");
 const aadhaarFixture = () => deployAegis({ zkBackend: "anonAadhaar", salt: 10n });
 const aadhaarStateFixture = () => deployAegis({ zkBackend: "anonAadhaar", adapterRequiredState: 27n, salt: 11n });
 
-/** Unpack the 0x2A taker payload back into the adapter's verifyProof arguments */
+/** Unpack the 0x2A taker payload [L][0x02][nullifier][revealArray][proof] back into the adapter's verifyProof arguments */
 function decodeZk(zk: string): { nullifier: bigint; reveal: RevealArray; proof: string } {
   const b = ethers.getBytes(zk);
-  const word = (i: number) => BigInt(ethers.hexlify(b.slice(2 + 32 * i, 2 + 32 * (i + 1))));
+  if (b[2] !== 0x02) throw new Error(`expected a ZK Aadhaar (type 2) payload, got type ${b[2]}`);
+  const word = (i: number) => BigInt(ethers.hexlify(b.slice(3 + 32 * i, 3 + 32 * (i + 1))));
   return {
     nullifier: word(0),
     reveal: [word(1), word(2), word(3), word(4)],
-    proof: ethers.hexlify(b.slice(2 + 160)),
+    proof: ethers.hexlify(b.slice(3 + 160)),
   };
 }
 
@@ -26,7 +27,7 @@ const usdcIn = (env: AegisEnv, zk?: string) => env.takerData({ tokenIn: env.addr
 describe("AnonAadhaarAdapter (IZKVerifier over Anon Aadhaar Groth16)", function () {
   it("is wired as the order's 0x2A verifier", async function () {
     const env = await loadFixture(aadhaarFixture);
-    expect(env.params.zkVerifier).to.equal(env.addr.adapter);
+    expect(env.params.aadhaarVerifier).to.equal(env.addr.adapter); // 0x2A type-2 slot
     expect(await env.contracts.adapter.ANON_AADHAAR()).to.equal(env.addr.anonAadhaar);
     expect(await env.contracts.adapter.APP_SEED()).to.equal(AEGIS_NULLIFIER_SEED);
     expect(await env.contracts.adapter.currentNullifierSeed()).to.equal(AEGIS_NULLIFIER_SEED); // epochs disabled in this fixture

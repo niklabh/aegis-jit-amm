@@ -13,7 +13,11 @@ import {
   AegisStrategyParams,
   Order,
   ZKMode,
+  ZKVerifierType,
+  encodeWorldIdProofEnvelope,
+  encodeWorldIdTakerArgs,
   encodeZKTakerArgs,
+  worldIdSignalHash,
   zkAttestationHash,
 } from "../../src/aegisProgramBuilder";
 
@@ -27,6 +31,9 @@ import type {
   AnonAadhaarAdapter,
   AnonAadhaarGroth16Verifier,
   AegisZKForwarder,
+  WorldIDAdapter,
+  MockWorldIDRouter,
+  MockSemaphoreVerifier,
   MockERC4626Vault,
   StaticQuoter,
   TokenCustomDecimalsMock,
@@ -96,6 +103,10 @@ export function encodeEnvelope(timestamp: bigint, words: bigint[], recipient?: s
 
 /** App-scoped nullifier seed for the Anon Aadhaar adapter */
 export const AEGIS_NULLIFIER_SEED = BigInt(ethers.id("aegis-jit/anon-aadhaar/nullifier-seed")) >> 8n;
+/** World ID: Orb-verified humans are Semaphore group 1 */
+export const WORLD_ID_GROUP = 1n;
+/** Root the local MockWorldIDRouter starts with (any nonzero value; real roots are registered later) */
+export const WORLD_ID_INITIAL_ROOT = BigInt(ethers.id("aegis-jit/world-id/initial-root")) >> 8n;
 export const MAHARASHTRA = 27;
 
 export interface AegisConfig {
@@ -127,6 +138,13 @@ export interface AegisConfig {
   adapterRequiredState: bigint;
   /** Anon Aadhaar nullifier epoch (0 = static app seed; >0 = nullifierSeed rotates every epoch) */
   epochDuration: number;
+  /** 0x2A proof types the Maker accepts: 1 World ID, 2 ZK Aadhaar, 3 either */
+  zkVerifierTypes: number;
+  /** World ID app id + action behind the adapter's external nullifier */
+  worldIdAppId: string;
+  worldIdAction: string;
+  /** MockWorldIDRouter root-history expiry in seconds (World ID default: 1 hour) */
+  rootHistoryExpiry: number;
 }
 
 export const DEFAULT_CONFIG: AegisConfig = {
@@ -150,6 +168,10 @@ export const DEFAULT_CONFIG: AegisConfig = {
   maxProofAge: 24 * 3600,
   adapterRequiredState: 0n,
   epochDuration: 0,
+  zkVerifierTypes: ZKVerifierType.ANY,
+  worldIdAppId: "app_staging_aegis_jit_mumbai",
+  worldIdAction: "aegis-jit-fee-tier",
+  rootHistoryExpiry: 3600,
 };
 
 export interface SwapResult {
@@ -190,6 +212,14 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     cfg.zkBackend === "groth16" ? await groth16.getAddress() : await anonAadhaar.getAddress(),
     AEGIS_NULLIFIER_SEED, cfg.epochDuration, cfg.maxProofAge, cfg.adapterRequiredState, [await forwarder.getAddress()],
   ]);
+  // World ID stack: router mock (groups, root history) -> Semaphore verifier double; adapter = 0x2A type-1 verifier
+  const semaphoreMock = await deploy<MockSemaphoreVerifier>("MockSemaphoreVerifier", [await deployer.getAddress()]);
+  const worldIdRouter = await deploy<MockWorldIDRouter>("MockWorldIDRouter", [
+    await semaphoreMock.getAddress(), await deployer.getAddress(), WORLD_ID_GROUP, WORLD_ID_INITIAL_ROOT, cfg.rootHistoryExpiry,
+  ]);
+  const worldIdAdapter = await deploy<WorldIDAdapter>("WorldIDAdapter", [
+    await worldIdRouter.getAddress(), WORLD_ID_GROUP, cfg.worldIdAppId, cfg.worldIdAction, [await forwarder.getAddress()],
+  ]);
   const usdcVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await usdc.getAddress(), "Aegis USDC Vault", "avUSDC"]);
   const wethVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await weth.getAddress(), "Aegis WETH Vault", "avWETH"]);
   const quoter = await deploy<StaticQuoter>("StaticQuoter");
@@ -209,6 +239,9 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     forwarder: await forwarder.getAddress(),
     pairingVerifier: await pairingVerifier.getAddress(),
     zkVerifier: cfg.zkBackend === "ecdsa" ? await verifier.getAddress() : await adapter.getAddress(),
+    worldIdAdapter: await worldIdAdapter.getAddress(),
+    worldIdRouter: await worldIdRouter.getAddress(),
+    semaphoreVerifier: await semaphoreMock.getAddress(),
     maker: await maker.getAddress(),
   };
   const tokenA = BigInt(addr.usdc) < BigInt(addr.weth) ? addr.usdc : addr.weth;
@@ -239,7 +272,9 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     vault1: cfg.useVaults ? addr.wethVault : ethers.ZeroAddress,
     jitHook: cfg.useVaults ? addr.hook : ethers.ZeroAddress,
     deadline: BigInt(latest!.timestamp + 30 * 24 * 3600),
-    zkVerifier: addr.zkVerifier,
+    zkVerifierTypes: cfg.zkVerifierTypes,
+    worldIdVerifier: cfg.zkVerifierTypes & ZKVerifierType.WORLD_ID ? addr.worldIdAdapter : ethers.ZeroAddress,
+    aadhaarVerifier: cfg.zkVerifierTypes & ZKVerifierType.AADHAAR ? addr.zkVerifier : ethers.ZeroAddress,
     zkMode: cfg.zkMode,
     requiredStateCode: cfg.requiredStateCode,
     lambdaBps: cfg.lambdaBps,
@@ -311,6 +346,35 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     return encodeZKTakerArgs(nullifier, reveal, proof);
   }
 
+  /**
+   * World ID proof bound to `taker` (type-1 payload for 0x2A), mock backend: the deployer plays the
+   * World ID sequencer + World App and registers the statement (root, nullifierHash, signalHash,
+   * externalNullifier) with MockSemaphoreVerifier for 8 hash-derived proof words. The statement is
+   * exactly what the real verifier checks, so every public input matters (and nothing else does).
+   *  - `person`    selects the human: same person => same nullifierHash, whatever the wallet
+   *  - `root`      merkle root the proof claims (default: the router's latest root)
+   *  - `recipient` selects the forwarder envelope (root, recipient, proof)
+   *  - `tamper`    flips a proof word after registration => invalid proof
+   */
+  async function worldIdArgs(
+    taker: string,
+    opts: { person?: string; root?: bigint; recipient?: string; tamper?: boolean } = {},
+  ): Promise<string> {
+    const person = opts.person ?? taker.toLowerCase();
+    // stands in for the circuit's Poseidon(externalNullifier, identityNullifier)
+    const nullifierHash = BigInt(ethers.solidityPackedKeccak256(["string", "string"], ["aegis-jit/world-id/mock-nullifier", person])) >> 8n;
+    const root: bigint = opts.root ?? (await worldIdRouter.latestRoot());
+    const signalHash = worldIdSignalHash(taker);
+    const externalNullifier: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
+    const words = Array.from({ length: 8 }, (_, i) =>
+      BigInt(ethers.solidityPackedKeccak256(
+        ["uint256", "uint256", "uint256", "uint256", "uint256"], [root, nullifierHash, signalHash, externalNullifier, i],
+      )) >> 8n);
+    await (await semaphoreMock.connect(deployer).registerProof(words, [root, nullifierHash, signalHash, externalNullifier])).wait();
+    if (opts.tamper) words[7] ^= 1n;
+    return encodeWorldIdTakerArgs(nullifierHash, encodeWorldIdProofEnvelope(root, words, opts.recipient));
+  }
+
   function takerData(opts: { tokenIn: string; exactIn?: boolean; zk?: BytesLike; threshold?: bigint }): string {
     return TakerTraitsLib.build({
       isExactIn: opts.exactIn ?? true,
@@ -352,9 +416,12 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   return {
     cfg, params, order, orderHash, shipReceipt, chainId, issuer,
     accounts: { deployer, maker, human, bot, whale },
-    contracts: { aqua, weth, usdc, router, hook, strategy, verifier, anonAadhaar, adapter, groth16, pairingVerifier, forwarder, usdcVault, wethVault, quoter },
+    contracts: {
+      aqua, weth, usdc, router, hook, strategy, verifier, anonAadhaar, adapter, groth16, pairingVerifier, forwarder,
+      worldIdAdapter, worldIdRouter, semaphoreMock, usdcVault, wethVault, quoter,
+    },
     addr, tokenA,
-    zkArgs, takerData, quote, swap, vaultAssets, aquaBalances,
+    zkArgs, worldIdArgs, takerData, quote, swap, vaultAssets, aquaBalances,
   };
 }
 

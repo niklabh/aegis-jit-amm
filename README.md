@@ -8,7 +8,7 @@ interpreter loop:
 
 | Opcode | Instruction | What it does |
 |--------|-------------|--------------|
-| `0x2A` | **ZKIdentityGuard** | Verifies an Anon-Aadhaar / World-ID style proof from the taker's calldata (STATICCALL). It either gates the order (strict mode) or tiers the taker as *verified human* vs *unverified bot* (tiered mode). |
+| `0x2A` | **ZKIdentityGuard** | Modular verifier router: verifies a **World ID** proof (type 1, `WorldIDAdapter` → World ID Router) or a **ZK Aadhaar** proof (type 2, `AnonAadhaarAdapter` → Anon Aadhaar Groth16) from the taker's calldata (STATICCALL). It either gates the order (strict mode) or tiers the taker as *verified human* vs *unverified bot* (tiered mode). Both pathways land in the same 0x7A discount. |
 | `0x9A` | **JITVaultReserves** | Reads the Maker's **live** ERC-4626 backing and caps any single execution at **λ** (e.g. 25%) of it. It also adds virtual depth (`boost`) without locking extra capital. View-safe. |
 | `0x7A` | **VolatilitySurgeFee** | Applies a size- and flow-aware LVR fee: base fee below a utilization threshold, surge fee above it, measured on cumulative in-window flow so split trades can't dodge it. Verified humans pay half the base fee. |
 
@@ -17,13 +17,18 @@ with the official **Anon Aadhaar v2** circuit. A taker proves "over 18, resident
 with a **real Groth16 (BN254) proof**, verified on-chain via the `ecPairing` precompile (0x08)
 inside `0x2A`, without revealing anything else.
 
+Takers can instead present a **World ID** proof of personhood (`verifierType = 1`): `WorldIDAdapter`
+calls the World ID Router's `verifyProof` with the signal bound to the taker's address, and the
+same `0x2A → 0x7A` path grants the same retail fee tier. Global biometric proof-of-personhood and
+sovereign Indian regional verification are two doors into one fee logic.
+
 ## Judge quick-start
 
 ```bash
 yarn && (cd packages/zk-aadhaar && npm install) && (cd ui && npm install)
 node packages/zk-aadhaar/prover/fetch-artifacts.mjs   # once: official Anon Aadhaar v2 artifacts, ~620 MB, SHA-256 pinned
 
-npx hardhat test && forge test                        # 91 Hardhat tests (incl. 10 with REAL Groth16 proofs) + 8 Foundry fuzz properties
+npx hardhat test && forge test                        # 103 Hardhat tests (incl. 10 with REAL Groth16 proofs, 12 World ID) + 8 Foundry fuzz properties
 npx hardhat run scripts/demo-mumbai.ts                # CLI demo: real proof in Scenario 1 + ecPairing gas breakdown
 ./scripts/start-local-demo.sh                         # node + local prover + seed + UI at http://127.0.0.1:5173
 cd ui && npm run smoke                                # headless: QR → RSA → Groth16 → on-chain verify → swap() (stack running)
@@ -49,9 +54,10 @@ RAM.
                                                      │ swap / quote
  ┌──────────────────────────────── AegisSwapVMRouter (SwapVM + AquaOpcodes) ───────────────────────┐
  │ 0x0D Deadline                                                                                    │
- │ 0x2A ZKIdentityGuard ─staticcall▶ AnonAadhaarAdapter (epoch seed, freshness, signal, forwarders) │
- │      │                              └▶ AnonAadhaarGroth16Verifier (trust root = RSA key hash)    │
- │      │                                   └▶ Verifier.sol ── ecMul/ecAdd ── ecPairing (0x08)      │
+ │ 0x2A ZKIdentityGuard ─staticcall▶ type 2: AnonAadhaarAdapter (epoch seed, freshness, signal)     │
+ │      │                              │   └▶ AnonAadhaarGroth16Verifier → Verifier.sol → ecPairing │
+ │      │                              └▶ type 1: WorldIDAdapter (signalHash = taker, ext. nullifier)│
+ │      │                                  └▶ IWorldID router: verifyProof(root, 1, …, proof[8])    │
  │      └─ verified ⇒ ctx.vm.dispatch := _dispatchVerifiedHuman; nullifier → beneficiary binding     │
  │ 0x9A JITVaultReserves ─staticcall▶ ERC-4626 vaults (λ cap on live backing, virtual offsets)      │
  │ 0x0B/0x2B/0x0A RequireMinRate band (two-sided floor)                                             │
@@ -71,7 +77,7 @@ RAM.
 ```
 [0] 0x0D Deadline              strategy expiry
     (Aqua balances)            preloaded by the router — not an opcode
-[1] 0x2A ZKIdentityGuard       tier / gate the taker
+[1] 0x2A ZKIdentityGuard       tier / gate the taker (World ID or ZK Aadhaar proof)
 [2] 0x9A JITVaultReserves      λ cap + virtual offsets — wraps everything below
 [3] 0x0B JumpIfTokenIn ─┐      two-sided hard price floor:
 [4] 0x2B RequireMinRate │A→B     never sell WETH < 2,000 USDC
@@ -89,18 +95,29 @@ Every instruction uses SwapVM framing `[opcode:1][argsLength:1][args]`. The full
 Integers are big-endian and tightly packed. Fee rates use SwapVM's `BPS = 1e9` (= 100%).
 λ, boost and utilization use 1e4 (= 100% / 1.0x).
 
-### `0x2A ZKIdentityGuard` — 25 bytes
+### `0x2A ZKIdentityGuard` — 46 bytes
 | Offset | Size | Type | Field | Notes |
 |---:|---:|---|---|---|
-| 0 | 20 | `address` | `verifier` | `IZKVerifier.verifyProof(taker, nullifier, revealArray, proof) view returns (bool)` |
-| 20 | 1 | `uint8` | `mode` | `0` strict (reverts `ZKVerificationFailed()`), `1` tiered (never reverts) |
-| 21 | 4 | `uint32` | `requiredStateCode` | `0` = any; else must equal `revealArray[3]` |
+| 0 | 1 | `uint8` | `verifierTypes` | accepted proof types, bitmask: `1` World ID, `2` ZK Aadhaar, `3` either |
+| 1 | 1 | `uint8` | `mode` | `0` strict (reverts `ZKVerificationFailed()`), `1` tiered (never reverts) |
+| 2 | 4 | `uint32` | `requiredStateCode` | `0` = any; else must equal Aadhaar `revealArray[3]` (type 2 only) |
+| 6 | 20 | `address` | `worldIdVerifier` | `IZKVerifier` for type 1 (`WorldIDAdapter`); zero iff bit `1` unset |
+| 26 | 20 | `address` | `aadhaarVerifier` | `IZKVerifier` for type 2 (`AnonAadhaarAdapter`); zero iff bit `2` unset |
 
-Taker payload (consumed with `tryChopTakerArgs`):
-`[uint16 L][nullifier:32][revealArray:4×32][proof:L−160]`, where
-`revealArray = [ageAbove18, gender, pincode, state]`. The taker is verified iff
-`revealArray[0] == 1`, the state matches, and the verifier returns `true` for
-`ctx.query.taker`. Binding the proof to the taker stops a bot replaying a human's proof.
+Taker payload (consumed with `tryChopTakerArgs`), typed by its first byte:
+`[uint16 L][verifierType:1][nullifier:32][revealArray:4×32 — type 2 only][proof]`.
+- **Type 1, World ID:** `nullifier` = World ID `nullifierHash`, `proof` =
+  `abi.encode(merkleRoot, uint256[8])` (or `(merkleRoot, recipient, uint256[8])` via a trusted
+  forwarder). The adapter calls `IWorldID.verifyProof(root, groupId = 1, hashToField(taker),
+  nullifierHash, externalNullifierHash, proof)` under STATICCALL.
+- **Type 2, ZK Aadhaar:** `revealArray = [ageAbove18, gender, pincode, state]`, `proof` =
+  `abi.encode(timestamp, uint256[8])` (or with `recipient`). `revealArray[0]` must be 1 and the
+  state must match.
+
+The taker is verified iff the Maker accepts the type, the adapter returns `true` for
+`ctx.query.taker`, and the per-verifier nullifier binding allows it. Binding the proof to the
+taker stops a bot replaying a human's proof; binding the nullifier to the first address stops one
+human farming the discount from many wallets.
 
 ### `0x9A JITVaultReserves` — 82 bytes
 | Offset | Size | Type | Field | Notes |
@@ -135,7 +152,7 @@ which yields the minimal gross input.
 | 2 | **Symmetry** | `exactIn(X)→Y`, `exactOut(Y)→X'`: `X' ≤ X`, `X − X' ≤ 2 wei` (measured on the coarse 6-dp side) |
 | 3 | **Sub-additivity** | 2 × ½ never beats 1 × full, exactIn and exactOut, both tiers and directions |
 | 4 | **Monotonicity** | strictly increasing output; average price never improves with size |
-| 5 | **ZK tier differentiation** | human > bot on the same trade; discount is exactly 50% of base; replayed, forged, under-18 and wrong-state proofs get no discount; strict mode reverts |
+| 5 | **ZK tier differentiation** | human > bot on the same trade; discount is exactly 50% of base; replayed, forged, under-18 and wrong-state proofs get no discount; strict mode reverts; a World ID proof and a ZK Aadhaar proof get the identical tier (`test/WorldIDAdapter.test.ts`) |
 | 6 | **JIT protection** | a 500k whale is blocked; the maximum single execution is exactly λ of the vault; the cap tracks live vault withdrawals and yield |
 | + | Round-trip safety, self-custody (vault == Aqua book, no idle tokens), TS == Solidity builder parity, and an independent off-chain model of the math |
 
@@ -165,6 +182,36 @@ the verified-human dispatcher makes the tier tests fail.
   `amountIn` right after. The Maker's wallet ends every swap holding only vault shares.
 - `0x9A` reads `convertToAssets(balanceOf(maker))` live. Vault yield raises the exposure cap
   automatically, and a Maker withdrawal shrinks it immediately, with no re-configuration.
+
+### World ID (global proof of personhood)
+- **`WorldIDAdapter`** (`contracts/zk/WorldIDAdapter.sol`, MIT) implements the same `IZKVerifier`
+  as the Aadhaar adapter, so the opcode treats both alike. It calls the World ID Router's
+  6-argument `verifyProof(root, groupId, signalHash, nullifierHash, externalNullifierHash, proof)`
+  (`contracts/zk/world-id/IWorldID.sol`, the on-chain-template interface) with:
+  - `groupId = 1` (Orb-verified humans);
+  - `signalHash = ByteHasher.hashToField(abi.encodePacked(taker))` — the signal **is the taker's
+    address**, hashed exactly as IDKit / World App do for an address signal, so a copied proof is
+    useless from any other address;
+  - `externalNullifierHash = hashToField(abi.encodePacked(hashToField(appId), action))` from the
+    adapter's `appId` / `action` (one action = one `nullifierHash` per human).
+  - The router call is a STATICCALL inside `try/catch`: any revert (`NonExistentRoot`,
+    `ExpiredRoot`, `ProofInvalid`, …) means "unverified", and the adapter itself never reverts.
+- **Sybil policy.** `0x2A` binds the World ID `nullifierHash` to the first address that swaps with
+  it (`nullifierTaker[worldIdAdapter][nullifierHash]`): one discounted address per human. The
+  Aadhaar adapter keeps its epoch-rotating nullifiers; the two schemes never share a namespace.
+- **Local World ID stack.** `MockWorldIDRouter` mirrors the Router + Identity Manager: group
+  routing (`NoSuchGroup`), root history with the 1-hour `ExpiredRoot` window, `NonExistentRoot`,
+  an identity-operator-only `registerRoot`, and delegation of the pairing check to an
+  `IWorldIDSemaphoreVerifier` — `MockSemaphoreVerifier` (accepts only exactly-registered
+  statements; no hardcoded success) in the unit tests.
+- **Tests** (`test/WorldIDAdapter.test.ts`): valid proof → same tier as Aadhaar, quote == swap,
+  `NullifierBound`; unknown root, expired root, wrong group, tampered proof, foreign
+  app/action, malformed envelopes → bot tier without reverting; reused nullifier from a second
+  wallet → bot tier; replayed takerData → bot tier (strict mode reverts); Maker policy
+  `verifierTypes` 1 / 2 / 3; trusted-forwarder envelope; real STATICCALL quote.
+- Production wiring: deploy `WorldIDAdapter(worldIdRouter, 1, "app_…", "aegis-jit-fee-tier", [forwarder])`
+  with the World ID Router address of the target chain, and pass the IDKit result's
+  `merkle_root`, `nullifier_hash` and `proof` into `encodeWorldIdTakerArgs`.
 
 ### Anon Aadhaar + zkAadhaar (identity)
 - **zkAadhaar** (`packages/zk-aadhaar`, MIT) handles the Secure QR offline:
@@ -302,14 +349,15 @@ contracts/
   AegisZKForwarder.sol         reference trusted forwarder (recipient == msg.sender)
   instructions/                ZKIdentityGuard · JITVaultReserves · VolatilitySurgeFee
   interfaces/IZKVerifier.sol
-  zk/                          IAnonAadhaar · AnonAadhaarAdapter · AnonAadhaarGroth16Verifier
+  zk/                          IAnonAadhaar · AnonAadhaarAdapter · AnonAadhaarGroth16Verifier · WorldIDAdapter
+  zk/world-id/                 IWorldID (router interface) · ByteHasher · IWorldIDSemaphoreVerifier
   zk/vendor/anon-aadhaar/      Verifier.sol (official, unmodified, GPL-3.0)
   libs/AegisOpcodes.sol
-  mocks/                       MockAnonIdentityVerifier · MockGroth16AnonAadhaar · MockERC4626Vault · StaticQuoter
+  mocks/                       MockAnonIdentityVerifier · MockGroth16AnonAadhaar · MockWorldIDRouter · MockSemaphoreVerifier · MockERC4626Vault · StaticQuoter
 src/aegisProgramBuilder.ts     TypeScript SDK (programs, orders, ZK taker payloads)
 packages/zk-aadhaar/           zkAadhaar QR scanner/parser/RSA verifier (Next.js app + libs)
   prover/                      Anon Aadhaar inputs + snarkjs prover · CLI · 127.0.0.1 service · test signer
-test/AegisJIT.test.ts          invariant suite      test/AnonAadhaarAdapter.test.ts
+test/AegisJIT.test.ts          invariant suite      test/AnonAadhaarAdapter.test.ts · test/WorldIDAdapter.test.ts
 test/RealGroth16Swap.test.ts   real proofs → swap   test/EpochNullifiers.test.ts (epochs, forwarders)
 test/foundry/                  fee-math + adapter fuzzing
 scripts/demo-mumbai.ts         judge CLI demo       scripts/seed-local.ts · start-local-demo.sh
@@ -354,7 +402,7 @@ calls or interfaces with SwapVM.
 | `LicenseRef-Degensoft-SwapVM-1.1` (unchanged template files) | `AquaAMM.sol`, `MockTaker.sol`, `deploy/`, `test/AquaAMM.test.ts`, `test/utils/{fixtures,ProgramBuilder,SwapVMHelpers}.ts` | Original swap-vm-template |
 | `GPL-3.0` (unmodified vendor) | `contracts/zk/vendor/anon-aadhaar/Verifier.sol` | snarkjs-generated Groth16 verifier from Anon Aadhaar v2; deployed separately and called via an independently written interface |
 | `MIT` | `packages/zk-aadhaar/` (Aadhaar Secure-QR scanner/parser/RSA verifier + Node Groth16 prover) | Independent; reuses circuit-input encoding from `@anon-aadhaar/core` (MIT, Ethereum Foundation) |
-| `MIT` | `contracts/interfaces/IZKVerifier.sol`, `contracts/zk/*.sol`, `contracts/AegisJITVaultHook.sol`, `contracts/mocks/*`, `test/*.test.ts` (AegisJIT), `scripts/*`, `ui/` | Independent code that only implements or calls interfaces (`IMakerHooks`, `ISwapVM`) or talks to deployed contracts via ABI/RPC (§3.3) |
+| `MIT` | `contracts/interfaces/IZKVerifier.sol`, `contracts/zk/*.sol`, `contracts/zk/world-id/*.sol` (World ID interfaces, after worldcoin/world-id-onchain-template, MIT), `contracts/AegisJITVaultHook.sol`, `contracts/mocks/*`, `test/*.test.ts` (AegisJIT), `scripts/*`, `ui/` | Independent code that only implements or calls interfaces (`IMakerHooks`, `ISwapVM`) or talks to deployed contracts via ABI/RPC (§3.3) |
 
 Full texts: [LICENSE](LICENSE), [LICENSES/](LICENSES/),
 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). SwapVM-1.1 makes hackathon and non-commercial

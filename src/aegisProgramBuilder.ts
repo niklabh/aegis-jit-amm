@@ -4,7 +4,7 @@
 // AegisJIT TypeScript SDK: compiles AegisJIT strategy programs / orders and taker ZK payloads.
 // Byte-identical to contracts/AegisJITStrategy.sol (asserted in test/AegisJIT.test.ts).
 
-import { AbiCoder, BytesLike, ZeroAddress, concat, getBytes, hexlify, keccak256, solidityPacked } from "ethers";
+import { AbiCoder, BytesLike, ZeroAddress, concat, getBytes, hexlify, keccak256, solidityPacked, toBeHex, toUtf8Bytes, zeroPadValue } from "ethers";
 import { MakerTraitsLib } from "../test/utils/SwapVMHelpers";
 
 /** Opcode indices understood by AegisSwapVMRouter (AquaOpcodes + AegisJIT extensions). */
@@ -26,6 +26,12 @@ export const FEE_BPS = 1_000_000_000n;
 export const BPS_1E4 = 10_000n;
 
 export const ZKMode = { STRICT: 0, TIERED: 1 } as const;
+/** 0x2A proof types: bit flags in the Maker's `verifierTypes`, selector byte in the taker payload. */
+export const ZKVerifierType = { WORLD_ID: 0x01, AADHAAR: 0x02, ANY: 0x03 } as const;
+/** World ID group of Orb-verified humans. */
+export const WORLD_ID_ORB_GROUP = 1n;
+
+export type RevealArray = [bigint, bigint, bigint, bigint];
 
 export interface RateFloor {
   /** Maker requires at least `amountIn` of tokenIn ... */
@@ -42,8 +48,14 @@ export interface AegisStrategyParams {
   vault1?: string;
   jitHook?: string;
   deadline?: bigint;
-  zkVerifier: string;
+  /** Accepted 0x2A proof types (bitmask). Defaults to the types whose verifier is set. */
+  zkVerifierTypes?: number;
+  /** IZKVerifier for World ID proofs (WorldIDAdapter); omit to reject World ID proofs */
+  worldIdVerifier?: string;
+  /** IZKVerifier for ZK Aadhaar proofs (AnonAadhaarAdapter); omit to reject Aadhaar proofs */
+  aadhaarVerifier?: string;
   zkMode: number;
+  /** Aadhaar jurisdiction gate on revealArray[3] (0 = any) */
   requiredStateCode?: number;
   lambdaBps: number;
   virtualBoostBps: number;
@@ -78,10 +90,27 @@ const lt = (a: string, b: string) => BigInt(a) < BigInt(b);
 
 // ---------- Per-opcode args encoders (layouts: docs/SPEC.md §5) ----------
 
-/** 0x2A — 25 bytes: verifier(20) | mode(1) | requiredStateCode(4) */
-export function encodeZKIdentityGuardArgs(verifier: string, mode: number, requiredStateCode = 0): string {
-  if (mode !== ZKMode.STRICT && mode !== ZKMode.TIERED) throw new Error(`invalid ZK mode ${mode}`);
-  return solidityPacked(["address", "uint8", "uint32"], [verifier, mode, requiredStateCode]);
+export interface ZKIdentityGuardArgs {
+  /** bitmask of accepted proof types: 1 World ID, 2 ZK Aadhaar, 3 either */
+  verifierTypes: number;
+  mode: number;
+  requiredStateCode?: number;
+  worldIdVerifier?: string;
+  aadhaarVerifier?: string;
+}
+
+const isZero = (a?: string) => !a || BigInt(a) === 0n;
+
+/** 0x2A — 46 bytes: verifierTypes(1) | mode(1) | requiredStateCode(4) | worldIdVerifier(20) | aadhaarVerifier(20) */
+export function encodeZKIdentityGuardArgs(a: ZKIdentityGuardArgs): string {
+  if (a.mode !== ZKMode.STRICT && a.mode !== ZKMode.TIERED) throw new Error(`invalid ZK mode ${a.mode}`);
+  if (a.verifierTypes === 0 || a.verifierTypes > ZKVerifierType.ANY) throw new Error(`invalid verifierTypes ${a.verifierTypes}`);
+  if (((a.verifierTypes & ZKVerifierType.WORLD_ID) !== 0) === isZero(a.worldIdVerifier)) throw new Error("worldIdVerifier must be set iff type 1 is accepted");
+  if (((a.verifierTypes & ZKVerifierType.AADHAAR) !== 0) === isZero(a.aadhaarVerifier)) throw new Error("aadhaarVerifier must be set iff type 2 is accepted");
+  return solidityPacked(
+    ["uint8", "uint8", "uint32", "address", "address"],
+    [a.verifierTypes, a.mode, a.requiredStateCode ?? 0, a.worldIdVerifier ?? ZeroAddress, a.aadhaarVerifier ?? ZeroAddress],
+  );
 }
 
 /**
@@ -115,17 +144,54 @@ function encodeMinRateArgs(tokenA: string, tokenB: string, rateA: bigint, rateB:
 
 /**
  * Taker-side payload consumed by 0x2A through `tryChopTakerArgs`:
- * [uint16 L][nullifier:32][revealArray: 4x32][proof: L-160]
+ * [uint16 L][verifierType:1][nullifier:32][revealArray:4x32 — Aadhaar only][proof]
  */
-export function encodeZKTakerArgs(nullifier: bigint, revealArray: [bigint, bigint, bigint, bigint], proof: BytesLike): string {
-  const payload = solidityPacked(["uint256", "uint256[4]", "bytes"], [nullifier, revealArray, proof]);
+export function encodeZKPayload(verifierType: number, nullifier: bigint, revealArray: RevealArray | undefined, proof: BytesLike): string {
+  if (verifierType !== ZKVerifierType.WORLD_ID && verifierType !== ZKVerifierType.AADHAAR) throw new Error(`invalid proof type ${verifierType}`);
+  const payload = revealArray
+    ? solidityPacked(["uint8", "uint256", "uint256[4]", "bytes"], [verifierType, nullifier, revealArray, proof])
+    : solidityPacked(["uint8", "uint256", "bytes"], [verifierType, nullifier, proof]);
   const len = getBytes(payload).length;
   if (len > 0xffff) throw new Error("ZK payload too long");
   return solidityPacked(["uint16", "bytes"], [len, payload]);
 }
 
+/** ZK Aadhaar (type 2) payload: [L][0x02][nullifier][revealArray[4]][proof] */
+export function encodeZKTakerArgs(nullifier: bigint, revealArray: RevealArray, proof: BytesLike): string {
+  return encodeZKPayload(ZKVerifierType.AADHAAR, nullifier, revealArray, proof);
+}
+
+/** World ID (type 1) payload: [L][0x01][nullifierHash][abi.encode(merkleRoot, [recipient,] uint256[8])] */
+export function encodeWorldIdTakerArgs(nullifierHash: bigint, proof: BytesLike): string {
+  return encodeZKPayload(ZKVerifierType.WORLD_ID, nullifierHash, undefined, proof);
+}
+
+/** WorldIDAdapter proof envelope: (merkleRoot, proof[8]) direct, or (merkleRoot, recipient, proof[8]) via a trusted forwarder */
+export function encodeWorldIdProofEnvelope(merkleRoot: bigint, proof: bigint[], recipient?: string): string {
+  if (proof.length !== 8) throw new Error("World ID proof must be 8 words");
+  const c = AbiCoder.defaultAbiCoder();
+  return recipient
+    ? c.encode(["uint256", "address", "uint256[8]"], [merkleRoot, recipient, proof])
+    : c.encode(["uint256", "uint256[8]"], [merkleRoot, proof]);
+}
+
+/** World ID `ByteHasher.hashToField`: keccak256 >> 8 */
+export const hashToField = (bytes: BytesLike): bigint => BigInt(keccak256(bytes)) >> 8n;
+
+/** Semaphore signalHash World ID computes for an address signal: hashToField(abi.encodePacked(address)) */
+export function worldIdSignalHash(address: string): bigint {
+  const b = getBytes(address);
+  if (b.length !== 20) throw new Error("signal must be an address");
+  return hashToField(b);
+}
+
+/** externalNullifierHash = hashToField(abi.encodePacked(hashToField(appId), action)) — World ID on-chain template */
+export function worldIdExternalNullifier(appId: string, action: string): bigint {
+  return hashToField(concat([zeroPadValue(toBeHex(hashToField(toUtf8Bytes(appId))), 32), toUtf8Bytes(action)]));
+}
+
 /** Message the MockAnonIdentityVerifier issuer signs (EIP-191 `signMessage(getBytes(hash))`). */
-export function zkAttestationHash(chainId: bigint, verifier: string, taker: string, nullifier: bigint, revealArray: [bigint, bigint, bigint, bigint]): string {
+export function zkAttestationHash(chainId: bigint, verifier: string, taker: string, nullifier: bigint, revealArray: RevealArray): string {
   return keccak256(AbiCoder.defaultAbiCoder().encode(
     ["uint256", "address", "address", "uint256", "uint256[4]"],
     [chainId, verifier, taker, nullifier, revealArray],
@@ -139,7 +205,7 @@ export class AegisProgramBuilder {
    * Compiles the AegisJIT program:
    *  1. Deadline (0x0D)                 — strategy expiry guard (omitted if 0)
    *  2. Aqua balances                   — preloaded by the router (no opcode)
-   *  3. ZKIdentityGuard (0x2A)          — tier / gate the taker
+   *  3. ZKIdentityGuard (0x2A)          — tier / gate the taker (World ID and/or ZK Aadhaar proof)
    *  4. JITVaultReserves (0x9A)         — λ exposure cap + virtual-offset boost (wraps the rest)
    *  5. RequireMinRate band (0x0B/0x2B/0x0A/0x2B) — two-sided hard floor (omitted if none)
    *  6. VolatilitySurgeFee (0x7A)       — dynamic LVR fee, human discount
@@ -156,7 +222,11 @@ export class AegisProgramBuilder {
     const parts: string[] = [];
     const deadline = p.deadline ?? 0n;
     if (deadline > 0n) parts.push(ix(AegisOpcodes.DEADLINE, solidityPacked(["uint40"], [deadline])));
-    parts.push(ix(AegisOpcodes.ZK_IDENTITY_GUARD, encodeZKIdentityGuardArgs(p.zkVerifier, p.zkMode, p.requiredStateCode ?? 0)));
+    const verifierTypes = p.zkVerifierTypes ?? ((isZero(p.worldIdVerifier) ? 0 : ZKVerifierType.WORLD_ID) | (isZero(p.aadhaarVerifier) ? 0 : ZKVerifierType.AADHAAR));
+    parts.push(ix(AegisOpcodes.ZK_IDENTITY_GUARD, encodeZKIdentityGuardArgs({
+      verifierTypes, mode: p.zkMode, requiredStateCode: p.requiredStateCode ?? 0,
+      worldIdVerifier: p.worldIdVerifier, aadhaarVerifier: p.aadhaarVerifier,
+    })));
     parts.push(ix(AegisOpcodes.JIT_VAULT_RESERVES, encodeJITVaultReservesArgs(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB)));
 
     const f01 = p.floor01 ?? { amountIn: 0n, amountOut: 0n };

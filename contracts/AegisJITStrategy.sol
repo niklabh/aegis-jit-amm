@@ -23,7 +23,7 @@ import { VolatilitySurgeFeeArgsBuilder } from "./instructions/VolatilitySurgeFee
 /// Program layout:
 ///   [Deadline 0x0D]?                       strategy expiry (omitted if deadline == 0)
 ///   (Aqua balances preloaded by the router — not an opcode)
-///   ZKIdentityGuard 0x2A                   tier / gate the taker
+///   ZKIdentityGuard 0x2A                   tier / gate the taker (World ID and/or ZK Aadhaar proofs)
 ///   JITVaultReserves 0x9A                  λ exposure cap + virtual-offset boost (wraps the rest)
 ///   [JumpIfTokenIn 0x0B → P2]?             two-sided rate floor band (omitted if no floors):
 ///   [RequireMinRate 0x2B (A→B)]?             P1
@@ -43,9 +43,11 @@ contract AegisJITStrategy {
         address vault1;              // ERC-4626 backing token1
         address jitHook;             // AegisJITVaultHook (0 = no JIT vault settlement)
         uint40 deadline;             // 0 = none
-        address zkVerifier;
+        uint8 zkVerifierTypes;       // accepted 0x2A proof types: 1 World ID, 2 ZK Aadhaar, 3 either
+        address worldIdVerifier;     // IZKVerifier for World ID proofs (0 iff bit 1 unset)
+        address aadhaarVerifier;     // IZKVerifier for ZK Aadhaar proofs (0 iff bit 2 unset)
         uint8 zkMode;                // 0 strict, 1 tiered
-        uint32 requiredStateCode;    // 0 = any
+        uint32 requiredStateCode;    // 0 = any (Aadhaar only)
         uint32 lambdaBps;            // 1e4 = 100%
         uint48 virtualBoostBps;      // 1e4 = 1.0x
         uint128 allocation0;         // amount of token0 the Maker ships to Aqua (boost anchor)
@@ -103,7 +105,7 @@ contract AegisJITStrategy {
 
         program = bytes.concat(
             p.deadline > 0 ? _ix(AegisOpcodes.DEADLINE, ControlsArgsBuilder.buildDeadline(p.deadline)) : bytes(""),
-            _ix(AegisOpcodes.ZK_IDENTITY_GUARD, ZKIdentityGuardArgsBuilder.build(p.zkVerifier, p.zkMode, p.requiredStateCode)),
+            _ix(AegisOpcodes.ZK_IDENTITY_GUARD, ZKIdentityGuardArgsBuilder.build(p.zkVerifierTypes, p.zkMode, p.requiredStateCode, p.worldIdVerifier, p.aadhaarVerifier)),
             _ix(AegisOpcodes.JIT_VAULT_RESERVES, JITVaultReservesArgsBuilder.build(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB))
         );
 
