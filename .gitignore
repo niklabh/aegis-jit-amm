@@ -43,3 +43,4 @@ deployments/hardhat/
 # Foundry
 out-forge/
 cache-forge/
+.hardhat-node.log

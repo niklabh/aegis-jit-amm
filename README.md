@@ -14,8 +14,9 @@ interpreter loop:
 
 ```bash
 yarn                                     # install
-npx hardhat test                         # 67 Hardhat tests (64 AegisJIT + 3 template)
-forge test                               # Foundry fuzzing of the fee math (5 properties × 5,000 runs)
+npx hardhat test                         # 75 Hardhat tests (64 AegisJIT + 8 Anon Aadhaar adapter + 3 template)
+forge test                               # Foundry fuzzing: fee math + adapter (8 properties × 5,000 runs)
+./scripts/start-local-demo.sh            # node + deploy/seed + SwapVM Inspector UI at http://127.0.0.1:5173
 npx hardhat run scripts/demo-mumbai.ts   # 3-minute judge demo (in-process network)
 npx hardhat node & npx hardhat run --network localhost scripts/demo-mumbai.ts   # same, on a real JSON-RPC node
 ```
@@ -149,16 +150,79 @@ the verified-human dispatcher makes the tier tests fail.
 - `0x9A` reads `convertToAssets(balanceOf(maker))` live. Vault yield raises the exposure cap
   automatically, and a Maker withdrawal shrinks it immediately, with no re-configuration.
 
-### Anon-Identity (Anon Aadhaar / World ID) — CROPS
-- **Privacy**: takers reveal only selective attributes (`ageAbove18`, `state`), never identity.
-  The proof is bound to the taker address and gated by a nullifier.
-- **Censorship resistance**: in tiered mode (`mode = 1`) the opcode **never reverts**.
-  Unverified takers still trade, at the bot fee tier. Strict mode is opt-in per order.
-- **Open source & security**: the verifier is a pluggable `IZKVerifier` called by STATICCALL,
-  so a Groth16 / Anon-Aadhaar adapter replaces the mock without touching the opcode.
-  `MockAnonIdentityVerifier` is **not a SNARK**: it does a real ECDSA check of an issuer
-  attestation over `(chainid, verifier, taker, nullifier, revealArray)`, which gives
-  deterministic local tests with no hardcoded `true`.
+### Anon Aadhaar (identity)
+- `contracts/zk/AnonAadhaarAdapter.sol` implements `IZKVerifier` over the deployed Anon
+  Aadhaar verifier (`verifyAnonAadhaarProof`). It binds `signal = uint160(taker)`, enforces
+  proof freshness (24 h), `ageAbove18`, an optional state policy and an app nullifier seed.
+- Opcode `0x2A` binds each nullifier to the first address that swaps with it, so one identity
+  gets one discounted address.
+- Tests and the demo use `MockGroth16AnonAadhaar`. It has the same ABI and accepts a proof
+  only for the exact public signals it was registered for. **No real Groth16 proving or
+  verification runs in this repo.** Wiring the real verifier means deploying the adapter
+  with the official Anon Aadhaar contract address; that is not done or tested here.
+
+## CROPS Evaluation (Ethereum Foundation)
+
+**Censorship resistance**
+- Makers keep custody: capital stays in their own ERC-4626 positions, and strategies are
+  immutable Aqua orders that no operator can pause.
+- Tiered mode (`mode = 1`, the default) **never reverts**. Unverified takers still trade, at
+  the bot fee tier, so identity is a discount, not a gate. Strict mode is opt-in per order.
+- No relayer or allow-list sits between the taker and the router. With real Anon Aadhaar,
+  proofs are generated client-side from the user's own Aadhaar QR. (In this repo the prover
+  is mocked.)
+
+**Open source**
+- Source for every component is in this repo. Licences are split (see
+  [License & licensing boundary](#-license--licensing-boundary)):
+  - MIT: ZK adapter, verifier interface, JIT hook, mocks, scripts, tests and UI.
+  - `LicenseRef-Degensoft-SwapVM-1.1`: the opcodes and router, because they compile into
+    SwapVM. SwapVM-1.1 is a source-available copyleft licence with commercial triggers, not
+    an OSI-approved open-source licence. Judges should weigh that.
+
+**Privacy**
+- No name, Aadhaar number, photo or address goes on-chain. Calldata carries:
+  - `ageAbove18`; `state` only if the order requires it (default reveal `[1, 0, 0, state]`,
+    with gender and pincode left at 0);
+  - the proof timestamp and the Groth16 proof;
+  - `signal`, which is the taker address and already public.
+- Trade-off: the **nullifier** is a stable pseudonym per app (fixed `NULLIFIER_SEED`). Every
+  verified trade by the same person is linkable, and binding pins it to one address. That is
+  the cost of Sybil resistance.
+
+**Security**
+- Mempool hijack: a proof copied into a searcher's own transaction fails the
+  `signal = uint160(taker)` check, and the searcher pays the bot tier. This is tested by
+  replaying the exact takerData bytes, and fuzzed in Foundry.
+- One identity cannot farm discounts across wallets (nullifier binding), and stale proofs
+  are rejected (freshness window).
+- Maker protection:
+  - λ caps any single execution at 25% of the live vault;
+  - virtual depth uses constant offsets, so buy-then-sell round trips can't drain the Maker;
+  - the rolling surge window makes split trades pay the same fee as one trade;
+  - two-sided `RequireMinRate` floors.
+- `quote()` is STATICCALL-safe (proven with a real STATICCALL) and equals `swap()` to the wei.
+- **Not audited.**
+
+## SwapVM Inspector UI (`ui/`)
+
+Vite + React + TypeScript + Tailwind + viem. `./scripts/start-local-demo.sh` starts
+`hardhat node`, runs `scripts/seed-local.ts` (writes `ui/public/deployment.json`), and opens
+the UI.
+
+- **Bytecode disassembler.** The order is decoded live from Aqua's `Shipped` event, not from
+  a file. Each `[opcode][len][args]` frame is colour-coded: `0x2A` emerald, `0x9A` indigo
+  (λ and constant offsets decoded), `0x7A` amber (fees and window decoded), stock opcodes
+  slate. Hovering links the hex to the decoded card.
+- **Simulator.** Profiles: verified human, MEV bot, split attacker (5×), whale. The slider
+  calls `router.asView().quote()` live, alongside the effective fee (bps), the rolling-window
+  accumulator vs threshold, and a check against an independent TS model of the opcode math.
+  "Execute" sends a real `swap()` and shows quote vs executed and the divergence (0 wei).
+  The split attack runs inside `evm_snapshot` / `evm_revert`. The whale shows the decoded
+  `JITExposureCapExceeded`.
+- **Vault panel.** Shows the λ-exposed slice vs the untouched, yield-earning reserve, and
+  whether the Aqua book equals the vault backing.
+- `cd ui && npm run smoke` checks the same client library headlessly against a seeded node.
 
 ## Demo (`scripts/demo-mumbai.ts`)
 
@@ -186,11 +250,14 @@ contracts/
   AegisJITVaultHook.sol        JIT withdraw/deposit Maker hook
   instructions/                ZKIdentityGuard · JITVaultReserves · VolatilitySurgeFee
   interfaces/IZKVerifier.sol
+  zk/                          IAnonAadhaar · AnonAadhaarAdapter
   libs/AegisOpcodes.sol
-  mocks/                       MockAnonIdentityVerifier · MockERC4626Vault · StaticQuoter
+  mocks/                       MockAnonIdentityVerifier · MockGroth16AnonAadhaar · MockERC4626Vault · StaticQuoter
 src/aegisProgramBuilder.ts     TypeScript SDK (programs, orders, ZK taker payloads)
-test/AegisJIT.test.ts          invariant suite      test/foundry/   fee-math fuzzing
-scripts/demo-mumbai.ts         judge demo           docs/SPEC.md    spec & deviations
+test/AegisJIT.test.ts          invariant suite      test/AnonAadhaarAdapter.test.ts
+test/foundry/                  fee-math + adapter fuzzing
+scripts/demo-mumbai.ts         judge CLI demo       scripts/seed-local.ts · start-local-demo.sh
+ui/                            SwapVM Inspector     docs/SPEC.md    spec & deviations
 ```
 
 The original template (`AquaAMM`, `MockTaker`, `deploy/`) is unchanged and its tests still pass.
