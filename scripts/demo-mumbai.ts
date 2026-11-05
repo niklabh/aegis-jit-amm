@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // AegisJIT — ETHGlobal Mumbai 2026 judge demo
 //   npx hardhat run scripts/demo-mumbai.ts
 //

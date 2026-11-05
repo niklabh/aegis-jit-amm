@@ -1,3 +1,5 @@
+// Modified for AegisJIT on 2026-11-05: added TokenCustomDecimalsMock to dependencyCompiler and a
+// full-Yul-optimizer override for contracts/AegisSwapVMRouter.sol (EIP-170). Original: swap-vm-template.
 import * as dotenv from "dotenv";
 import "@nomicfoundation/hardhat-ethers";
 import "@nomicfoundation/hardhat-chai-matchers";

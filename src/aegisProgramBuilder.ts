@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LicenseRef-Degensoft-SwapVM-1.1
+// Powered by SwapVM — © Degensoft Ltd 2025. Imports the swap-vm-template helpers
+// (test/utils/SwapVMHelpers.ts), so this file is licensed under SwapVM-1.1 (created 2026-11-05).
 // AegisJIT TypeScript SDK: compiles AegisJIT strategy programs / orders and taker ZK payloads.
 // Byte-identical to contracts/AegisJITStrategy.sol (asserted in test/AegisJIT.test.ts).
 

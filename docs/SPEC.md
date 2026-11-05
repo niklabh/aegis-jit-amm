@@ -234,6 +234,22 @@ Known limits (documented, not hidden): the surge window resets at expiry, so a p
 taker who splits across windows pays less surge; λ caps a *single* execution, while the
 Aqua allocation bounds cumulative exposure.
 
+## 7a. Bytecode size (EIP-170)
+
+| Build | Runtime size | Headroom vs 24,576 B |
+|---|---:|---:|
+| Stock `AquaSwapVMRouter`, template optimizer (`runs: 1`, minimal Yul steps `dhfoDgvulfnTUtnIf`) | 24,281 B | 295 B |
+| `AegisSwapVMRouter`, template optimizer | 29,550 B | **−4,974 B (undeployable)** |
+| `AegisSwapVMRouter`, full default Yul optimizer (`runs: 1`, `viaIR`) | **21,021 B** | 3,555 B |
+
+Size by component in the template build: JIT ≈ 1.5 KB, surge fee ≈ 1.7 KB, ZK guard ≈ 1.3 KB,
+MinRate ≈ 0.4 KB. Splitting `_route` across two dispatchers costs only 32 B. The override in
+`hardhat.config.ts` applies to `contracts/AegisSwapVMRouter.sol` only, so every other
+contract keeps the template's settings. `AegisOpcodes` lives in its own file so
+`AegisJITStrategy` does not pull the router into the default-settings job. Moving
+instruction logic into external libraries was rejected: it would add DELEGATECALL overhead
+and ABI-encoding glue per opcode, and the optimizer alone recovers about 8.5 KB.
+
 ## 8. Milestones
 
 1. Spec (this file)

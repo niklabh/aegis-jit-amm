@@ -202,7 +202,33 @@ The original template (`AquaAMM`, `MockTaker`, `deploy/`) is unchanged and its t
 
 This software is provided "as is", without warranty of any kind. Use at your own risk.
 
-## 📄 License
+## 📄 License & licensing boundary
 
-The SwapVM template code is licensed under **LicenseRef-Degensoft-SwapVM-1.1**. See
-[LICENSE](LICENSE) and [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+**Powered by SwapVM — © Degensoft Ltd 2025.** Aqua © Degensoft Ltd 2025.
+
+This repo mixes two licences. The split follows SwapVM-1.1. §1.7(b) treats instruction
+programs that run in the same EVM address space as a *Modification*, and §3.1A requires
+Modifications to be published under SwapVM-1.1. §3.3 exempts independent code that only
+calls or interfaces with SwapVM.
+
+| Licence | Files | Why |
+|---|---|---|
+| `LicenseRef-Degensoft-SwapVM-1.1` | `contracts/AegisSwapVMRouter.sol`, `contracts/instructions/*`, `contracts/AegisJITStrategy.sol`, `contracts/libs/AegisOpcodes.sol`, `test/foundry/SurgeFeeMath.t.sol` | Inherit or import SwapVM implementation code (`SwapVM`, `AquaOpcodes`, `ContextLib`, `MinRate`, arg builders) and are compiled into the router runtime |
+| `LicenseRef-Degensoft-SwapVM-1.1` | `src/aegisProgramBuilder.ts`, `test/utils/aegisFixture.ts` | Import the swap-vm-template helper `test/utils/SwapVMHelpers.ts` |
+| `LicenseRef-Degensoft-SwapVM-1.1` (unchanged template files) | `AquaAMM.sol`, `MockTaker.sol`, `deploy/`, `test/AquaAMM.test.ts`, `test/utils/{fixtures,ProgramBuilder,SwapVMHelpers}.ts` | Original swap-vm-template |
+| `MIT` | `contracts/interfaces/IZKVerifier.sol`, `contracts/zk/*`, `contracts/AegisJITVaultHook.sol`, `contracts/mocks/*`, `test/*.test.ts` (AegisJIT), `scripts/*`, `ui/` | Independent code that only implements or calls interfaces (`IMakerHooks`, `ISwapVM`) or talks to deployed contracts via ABI/RPC (§3.3) |
+
+Full texts: [LICENSE](LICENSE), [LICENSES/](LICENSES/),
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). SwapVM-1.1 makes hackathon and non-commercial
+use free (§4). Commercial triggers (§5) apply above US$100k fees per year or US$10M
+liquidity under control. This summary is not legal advice.
+
+### Changes to the swap-vm-template (SwapVM-1.1 §3.1D)
+| Date | File | Change |
+|---|---|---|
+| 2026-11-05 | `hardhat.config.ts` | added `TokenCustomDecimalsMock` to `dependencyCompiler`; full-Yul-optimizer override for `AegisSwapVMRouter.sol` (EIP-170) |
+| 2026-11-05 | `tsconfig.json` | include `src/` and `scripts/` |
+| 2026-11-05 | `README.md` | rewritten for AegisJIT |
+| 2026-11-05 | `.gitignore` | Foundry output dirs |
+
+Everything else under the template's original paths is unchanged.

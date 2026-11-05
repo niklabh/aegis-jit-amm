@@ -41,7 +41,7 @@
     "typechain": "^8.3.2",
     "typescript": "^5.9.3"
   },
-  "resolutions":{
+  "resolutions": {
     "elliptic": "6.6.1",
     "@1inch/aqua": "https://github.com/1inch/aqua#6f05aa1ac2dcf701b0e086ad5e7606515f1fa454",
     "@1inch/solidity-utils": "6.9.7",

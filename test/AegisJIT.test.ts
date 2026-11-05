@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import "@nomicfoundation/hardhat-chai-matchers";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
