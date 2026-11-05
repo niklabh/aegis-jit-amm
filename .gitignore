@@ -50,3 +50,4 @@ cache-forge/
 private/
 .cache/
 .prover.log
+.vite-dev.log

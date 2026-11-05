@@ -23,7 +23,7 @@ async function realFixture() {
   const env = await deployAegis({ zkBackend: "groth16", adapterRequiredState: MAHARASHTRA_PACKED, salt: 20n });
   const human = await env.accounts.human.getAddress();
   const ts = (await ethers.provider.getBlock("latest"))!.timestamp;
-  const real = generateRealProof({ timestamp: ts, seed: AEGIS_NULLIFIER_SEED, signal: human }); // ~15 s
+  const real = await generateRealProof({ timestamp: ts, seed: AEGIS_NULLIFIER_SEED, signal: human }); // ~15 s
   return { env, real, zk: encodeRealProofTakerArgs(real) };
 }
 

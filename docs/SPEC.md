@@ -426,6 +426,14 @@ Hardhat tests and the demo call it through a JSON CLI (`prover/cli.ts`), like th
 A real proof for the default tree is committed as `test/fixtures/world-id/human-proof.json` so the
 Foundry suite exercises the vendored verifier without snarkjs.
 
+**Dashboard (`ui/src/lib/worldid.ts`).** The same identity/tree/proving code runs in the browser:
+the 4.5 MB zkey and 1.3 MB wasm are self-hosted under `ui/public/semaphore/30` and snarkjs'
+browser build proves in ~1 s. The witness (identity secrets, merkle path) stays in the tab; the
+page then runs `WorldIDAdapter.verifyProof` by `eth_call`, builds the takerTraits header for the
+321-byte type-1 payload (`buildTakerData`: slice index 9 = payload end, flags from the seeded
+header) and attaches it to the Verified Human profile. `fromIdKitResult` maps an IDKit / World App
+result (`merkle_root`, `nullifier` or `nullifier_hash`, abi-encoded `proof`) to the same payload.
+
 ## 8. Milestones
 
 1. Spec (this file)
@@ -437,4 +445,4 @@ Foundry suite exercises the vendored verifier without snarkjs.
 10–13. zkAadhaar merge + real Groth16, epoch nullifiers + forwarders, ZK Pass UI, docs
 14. World ID: `WorldIDAdapter`, modular 0x2A (`verifierTypes`, typed payloads), `MockWorldIDRouter`, `test/WorldIDAdapter.test.ts`
 15. World ID backend: `packages/world-id` prover (real Semaphore proofs), vendored verifier, Foundry fuzz, demo scenarios 1A/1B
-16. Dashboard: dual-tab ZK Pass (World ID / ZK Aadhaar), disassembler status, headless smoke for both tabs
+16. Dashboard: dual-tab ZK Pass (World ID proofs generated in the browser with snarkjs / ZK Aadhaar via the local prover), typed takerData header builder, disassembler PASSED status per proof type, IDKit result import, headless smoke for both tabs

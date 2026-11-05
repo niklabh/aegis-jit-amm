@@ -21,7 +21,7 @@ async function realFixture() {
   const env = await deployAegis({ worldIdBackend: "semaphore", salt: 50n });
   const h = await env.accounts.human.getAddress();
   const ext: bigint = await env.contracts.worldIdAdapter.EXTERNAL_NULLIFIER();
-  const proof = generateWorldIdProof({ identity: "human", signal: h, externalNullifier: ext }); // ~0.5 s
+  const proof = await generateWorldIdProof({ identity: "human", signal: h, externalNullifier: ext }); // ~0.5 s
   await (await env.contracts.worldIdRouter.connect(env.accounts.deployer).registerRoot(BigInt(proof.root))).wait();
   return { env, proof, zk: encodeWorldIdProofTakerArgs(proof), ext };
 }
@@ -48,7 +48,7 @@ describe("Real Semaphore (BN254) World ID proof -> AegisJIT swap", function () {
   it("local tree + hashing: the proof's root is the registered root; signalHash / externalNullifier follow World ID's conventions", async function () {
     const { env, proof } = await loadFixture(realFixture);
     const h = await env.accounts.human.getAddress();
-    expect(BigInt(proof.root)).to.equal(worldIdTreeRoot());
+    expect(BigInt(proof.root)).to.equal(await worldIdTreeRoot());
     expect(BigInt(proof.root)).to.equal(await env.contracts.worldIdRouter.latestRoot());
     expect(BigInt(proof.signalHash)).to.equal(worldIdSignalHash(h));
     expect(BigInt(proof.externalNullifierHash)).to.equal(worldIdExternalNullifier(env.cfg.worldIdAppId, env.cfg.worldIdAction));
@@ -125,7 +125,7 @@ describe("Real Semaphore (BN254) World ID proof -> AegisJIT swap", function () {
     const { human, bot, whale: altWallet } = env.accounts;
     const h = await human.getAddress();
     const alt = await altWallet.getAddress();
-    const p2 = generateWorldIdProof({ identity: "human", signal: alt, externalNullifier: ext });
+    const p2 = await generateWorldIdProof({ identity: "human", signal: alt, externalNullifier: ext });
     expect(p2.nullifierHash).to.equal(proof.nullifierHash); // Poseidon(externalNullifier, identityNullifier): wallet-independent
     expect(p2.root).to.equal(proof.root);
     const zk2 = encodeWorldIdProofTakerArgs(p2);
@@ -149,8 +149,8 @@ describe("Real Semaphore (BN254) World ID proof -> AegisJIT swap", function () {
 
     // a new identity joins the tree => new root (same human, new merkle path)
     const grown = [...WORLD_ID_MEMBERS, "erin"];
-    const p2 = generateWorldIdProof({ identity: "human", signal: h, externalNullifier: ext, members: grown });
-    expect(BigInt(p2.root)).to.equal(worldIdTreeRoot(grown));
+    const p2 = await generateWorldIdProof({ identity: "human", signal: h, externalNullifier: ext, members: grown });
+    expect(BigInt(p2.root)).to.equal(await worldIdTreeRoot(grown));
     await worldIdRouter.connect(deployer).registerRoot(BigInt(p2.root));
 
     const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));

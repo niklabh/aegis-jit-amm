@@ -31,8 +31,8 @@ node packages/world-id/prover/fetch-artifacts.mjs     # once: Semaphore depth-30
 
 npx hardhat test && forge test                        # 111 Hardhat tests (10 REAL Anon Aadhaar + 8 REAL World ID proofs) + 19 Foundry properties
 npx hardhat run scripts/demo-mumbai.ts                # CLI demo: real Aadhaar proof (1A) + real World ID proof (1B) + gas breakdowns
-./scripts/start-local-demo.sh                         # node + local prover + seed + UI at http://127.0.0.1:5173
-cd ui && npm run smoke                                # headless: QR → RSA → Groth16 → on-chain verify → swap() (stack running)
+./scripts/start-local-demo.sh                         # node + local prover + artifacts + seed + UI at http://127.0.0.1:5173
+cd ui && npm run smoke                                # headless, both ZK Pass tabs: World ID Semaphore proof + Aadhaar QR → RSA → Groth16 → on-chain verify → swap()
 ```
 
 Without the artifacts, the real-proof tests **skip with a warning** and the demo falls back to
@@ -328,10 +328,23 @@ Vite + React + TypeScript + Tailwind + viem. `./scripts/start-local-demo.sh` sta
 `hardhat node`, runs `scripts/seed-local.ts` (writes `ui/public/deployment.json`), and opens
 the UI.
 
+- **ZK Pass selector.** Two tabs feed the same `0x2A` opcode:
+  - **🌍 World ID (Global)** — a Semaphore v3 identity from the local World ID tree, a Groth16
+    membership proof generated **in the browser** (snarkjs over the public depth-30 artifacts,
+    served from `/semaphore/30`), checked with an `eth_call` through
+    `WorldIDAdapter → MockWorldIDRouter → SemaphoreVerifier` (World ID's own), then attached as
+    a type-1 payload. The witness never leaves the tab. A "Production: World App via IDKit"
+    box encodes a pasted IDKit result (`merkle_root`, `nullifier`, `proof`) into the same payload
+    and reports, honestly, that a real World ID root is not known to the local router.
+  - **🇮🇳 ZK Aadhaar (India Sovereign)** — the Secure QR scanner, in-browser RSA-2048 check and
+    Anon Aadhaar Groth16 proof via the local prover, attached as a type-2 payload.
 - **Bytecode disassembler.** The order is decoded live from Aqua's `Shipped` event, not from
-  a file. Each `[opcode][len][args]` frame is colour-coded: `0x2A` emerald, `0x9A` indigo
-  (λ and constant offsets decoded), `0x7A` amber (fees and window decoded), stock opcodes
-  slate. Hovering links the hex to the decoded card.
+  a file. Each `[opcode][len][args]` frame is colour-coded: `0x2A` emerald (both verifier slots
+  and `verifierTypes` decoded), `0x9A` indigo (λ and constant offsets decoded), `0x7A` amber
+  (fees and window decoded), stock opcodes slate. Hovering links the hex to the decoded card.
+  With a pass attached the `0x2A` card reads `PASSED (World ID Verified · type 1 …)` or
+  `PASSED (Groth16 Aadhaar Verified · type 2 …)`; the simulator shows the live fee drop
+  (0.30% → 0.15%) and the 0 wei quote-vs-swap divergence for whichever pass is attached.
 - **Simulator.** Profiles: verified human, MEV bot, split attacker (5×), whale. The slider
   calls `router.asView().quote()` live, alongside the effective fee (bps), the rolling-window
   accumulator vs threshold, and a check against an independent TS model of the opcode math.
@@ -340,7 +353,10 @@ the UI.
   `JITExposureCapExceeded`.
 - **Vault panel.** Shows the λ-exposed slice vs the untouched, yield-earning reserve, and
   whether the Aqua book equals the vault backing.
-- `cd ui && npm run smoke` checks the same client library headlessly against a seeded node.
+- `cd ui && npm run smoke` checks the same client library headlessly against a seeded node,
+  for both tabs: it rebuilds the World ID tree, generates a Semaphore proof with the dashboard's
+  own code path, verifies it on-chain, rebuilds the takerTraits header, compares the World ID
+  and Aadhaar quotes (identical tier), swaps with both, and checks replay protection.
 
 ## Demo (`scripts/demo-mumbai.ts`)
 
@@ -385,7 +401,7 @@ test/RealGroth16Swap.test.ts   real proofs → swap   test/EpochNullifiers.test.
 test/RealWorldIDSwap.test.ts   real World ID proofs → swap   test/fixtures/world-id/ (committed real proof)
 test/foundry/                  fee-math, Aadhaar adapter and World ID adapter fuzzing (+ real pairing)
 scripts/demo-mumbai.ts         judge CLI demo       scripts/seed-local.ts · start-local-demo.sh
-ui/                            SwapVM Inspector     docs/SPEC.md    spec & deviations
+ui/                            SwapVM Inspector (dual-tab ZK Pass: WorldIdPass · AadhaarPass · lib/worldid)   docs/SPEC.md    spec & deviations
 ```
 
 The original template (`AquaAMM`, `MockTaker`, `deploy/`) is unchanged and its tests still pass.

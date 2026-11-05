@@ -3,8 +3,9 @@
 
 import {
   createPublicClient, createWalletClient, decodeAbiParameters, defineChain, encodeAbiParameters, encodePacked,
-  http, parseEventLogs, size, BaseError, ContractFunctionRevertedError, type Address, type Hex,
+  http, parseEventLogs, size, BaseError, ContractFunctionRevertedError, concat, pad, slice, toHex, type Address, type Hex,
 } from "viem";
+import { worldIdEnvelope } from "./worldid";
 
 export type Order = { maker: Address; traits: Hex; data: Hex };
 export type Profile = "human" | "bot" | "split" | "whale";
@@ -19,11 +20,29 @@ export interface Deployment {
     usdcLiquidity: string; wethLiquidity: string; lambdaBps: number; virtualBoostBps: number;
     baseFeeBps: number; maxSurgeFeeBps: number; impactThresholdBps: string; decayWindowSec: number;
   };
-  addr: Record<"aqua" | "router" | "hook" | "usdc" | "weth" | "usdcVault" | "wethVault" | "adapter" | "anonAadhaar" | "groth16" | "pairingVerifier" | "forwarder" | "maker", Address>;
+  addr: Record<"aqua" | "router" | "hook" | "usdc" | "weth" | "usdcVault" | "wethVault" | "adapter" | "anonAadhaar" | "groth16" | "pairingVerifier" | "forwarder" | "maker", Address>
+    & Partial<Record<"worldIdAdapter" | "worldIdRouter" | "semaphoreVerifier" | "semaphoreMock" | "semaphoreReal", Address>>;
   accounts: Record<"maker" | "human" | "bot" | "whale", Address>;
-  takerData: Record<"human" | "bot" | "whale", Hex>;
+  takerData: Record<"human" | "bot" | "whale", Hex> & { worldIdHuman?: Hex };
   zk: { proverUrl: string; epochDuration: number; payloadLength: number; takerHeader: Hex; trustRoot: string; maharashtraPacked: string };
-  abi: { router: any; vault: any; aqua: any; adapter: any };
+  /** World ID pass config (scripts/seed-local.ts) */
+  worldId?: {
+    backend: "semaphore" | "mock";
+    appId: string;
+    action: string;
+    externalNullifier: string;
+    groupId: number;
+    treeDepth: number;
+    identityPrefix: string;
+    members: string[];
+    root: string;
+    rootHistoryExpiry: number;
+    payloadLength: number;
+    takerHeader: Hex;
+    /** URL base the dashboard serves semaphore.wasm / semaphore.zkey from */
+    artifactsBase: string;
+  };
+  abi: { router: any; vault: any; aqua: any; adapter: any; worldIdAdapter?: any; worldIdRouter?: any; semaphoreVerifier?: any };
 }
 
 /** Output of the local prover (packages/zk-aadhaar/prover/server.ts) */
@@ -59,6 +78,18 @@ export function proofEnvelope(r: ProverResult): Hex {
 
 /** Groth16 proof as 256 bytes (8 × 32-byte BN254 coordinates) */
 export const proofHex = (r: ProverResult): Hex => encodePacked(Array(8).fill("uint256"), r.proof.groth16Proof.map(BigInt) as any);
+
+/**
+ * takerData = takerTraits header ‖ instructionsArgs. The 22-byte header is 20 bytes of slice
+ * indexes (only index9, the end of instructionsArgs, is non-zero here: no threshold / to /
+ * deadline / hooks) + 2 bytes of flags (exactIn, transferFrom+Aqua push, A→B). The flags are
+ * taken from the seeded header, so this works for any payload length and proof type.
+ */
+export function buildTakerData(dep: Deployment, instructionsArgs: Hex): Hex {
+  const flags = slice(dep.zk.takerHeader, 20, 22);
+  const indexes = pad(toHex(BigInt(size(instructionsArgs)) << 144n), { size: 20 });
+  return concat([indexes, flags, instructionsArgs]);
+}
 
 export const FEE_BPS = 1_000_000_000n;
 export const USDC_DEC = 6;
@@ -182,11 +213,42 @@ export function createAegisClient(dep: Deployment) {
     })) as [boolean, Address];
     return { ok, beneficiary };
   }
-  /** takerData for the human profile carrying a fresh real proof */
+  /** takerData for the human profile carrying a fresh real Aadhaar proof (type 2) */
   function realProofTakerData(r: ProverResult): Hex {
-    const payload = encodeZkPayload(r);
-    if (size(payload) !== dep.zk.payloadLength) throw new Error(`unexpected ZK payload length ${size(payload)}`);
-    return `${dep.zk.takerHeader}${payload.slice(2)}` as Hex;
+    return buildTakerData(dep, encodeZkPayload(r));
+  }
+  /** takerData for the human profile carrying a World ID payload (type 1) */
+  function worldIdTakerData(payload: Hex): Hex {
+    return buildTakerData(dep, payload);
+  }
+
+  // ------------------------------------------------------------------ World ID
+  const W = () => {
+    if (!dep.addr.worldIdAdapter || !dep.abi.worldIdAdapter) throw new Error("deployment has no World ID adapter — re-run scripts/seed-local.ts");
+    return { address: dep.addr.worldIdAdapter, abi: dep.abi.worldIdAdapter } as const;
+  };
+  const WR = () => {
+    if (!dep.addr.worldIdRouter || !dep.abi.worldIdRouter) throw new Error("deployment has no World ID router — re-run scripts/seed-local.ts");
+    return { address: dep.addr.worldIdRouter, abi: dep.abi.worldIdRouter } as const;
+  };
+  /** WorldIDAdapter.verifyProof → IWorldID.verifyProof → SemaphoreVerifier, in an eth_call */
+  async function verifyWorldIdOnChain(taker: Address, p: { root: bigint; nullifierHash: bigint; proof: bigint[] }): Promise<{ ok: boolean; beneficiary: Address }> {
+    const [ok, beneficiary] = (await pub.readContract({
+      ...W(), functionName: "verifyProof", args: [taker, p.nullifierHash, [0n, 0n, 0n, 0n], worldIdEnvelope(p.root, p.proof)],
+    })) as [boolean, Address];
+    return { ok, beneficiary };
+  }
+  async function worldIdLatestRoot(): Promise<bigint> {
+    return (await pub.readContract({ ...WR(), functionName: "latestRoot", args: [] })) as bigint;
+  }
+  /** Mirrors the router's requireValidRoot: latest / historical (within the expiry window) / unknown or expired */
+  async function worldIdRootStatus(root: bigint): Promise<"latest" | "historical" | "unknown-or-expired"> {
+    if ((await worldIdLatestRoot()) === root) return "latest";
+    try { await pub.readContract({ ...WR(), functionName: "requireValidRoot", args: [root] }); return "historical"; }
+    catch { return "unknown-or-expired"; }
+  }
+  async function worldIdExternalNullifier(): Promise<bigint> {
+    return (await pub.readContract({ ...W(), functionName: "EXTERNAL_NULLIFIER", args: [] })) as bigint;
   }
   async function prove(digits: string, signal: Address): Promise<ProverResult> {
     const seed = await currentNullifierSeed();
@@ -214,6 +276,7 @@ export function createAegisClient(dep: Deployment) {
   return {
     pub, fetchLiveOrder, quote, swap, splitAttack, readState, snapshot, revert, takerOf,
     currentNullifierSeed, currentEpoch, verifyOnChain, realProofTakerData, prove, testQr, proverHealth,
+    worldIdTakerData, verifyWorldIdOnChain, worldIdLatestRoot, worldIdRootStatus, worldIdExternalNullifier,
   };
 }
 

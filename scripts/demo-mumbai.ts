@@ -208,7 +208,7 @@ async function main() {
     if (REAL_ZK) {
       process.stdout.write(`${C.dim}  scanning signed test Aadhaar QR → RSA-2048 → Groth16 proving…${C.reset}`);
       const ts = (await ethers.provider.getBlock("latest"))!.timestamp;
-      real = generateRealProof({ timestamp: ts, seed: await env.contracts.adapter.currentNullifierSeed(), signal: hAddr });
+      real = await generateRealProof({ timestamp: ts, seed: await env.contracts.adapter.currentNullifierSeed(), signal: hAddr });
       zk = encodeRealProofTakerArgs(real);
       process.stdout.write(` done (${real.proof.provingMs} ms)\n`);
     } else {
@@ -270,7 +270,7 @@ async function main() {
     let zk: string;
     if (REAL_WORLD_ID) {
       process.stdout.write(`${C.dim}  Semaphore v3 identity → depth-30 merkle path → Groth16 proving…${C.reset}`);
-      real = generateWorldIdProof({ identity: "human", signal: wAddr, externalNullifier: ext });
+      real = await generateWorldIdProof({ identity: "human", signal: wAddr, externalNullifier: ext });
       if ((await worldIdRouter.latestRoot()) !== BigInt(real.root)) {
         await (await worldIdRouter.connect(env.accounts.deployer).registerRoot(BigInt(real.root))).wait(); // sequencer publishes the tree root
       }

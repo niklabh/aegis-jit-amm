@@ -194,13 +194,13 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const { adapter } = env.contracts;
 
       const ts1 = await time.latest();
-      const p1 = generateRealProof({ timestamp: ts1, seed: await adapter.currentNullifierSeed(), signal: h });
+      const p1 = await generateRealProof({ timestamp: ts1, seed: await adapter.currentNullifierSeed(), signal: h });
       const zk1 = encodeRealProofTakerArgs(p1);
       const s1 = await env.swap(human, USDC(5_000), usdcIn(env, zk1));
       await expect(s1.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, BigInt(p1.proof.publicSignals.nullifier), h);
 
       await nextEpoch();
-      const p2 = generateRealProof({ timestamp: await time.latest(), seed: await adapter.currentNullifierSeed(), signal: h });
+      const p2 = await generateRealProof({ timestamp: await time.latest(), seed: await adapter.currentNullifierSeed(), signal: h });
       expect(p2.proof.publicSignals.nullifier).to.not.equal(p1.proof.publicSignals.nullifier); // same person, unlinkable
       expect(p2.qr.signedDataSha256).to.not.equal(undefined);
 
@@ -214,7 +214,7 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const env = await loadFixture(realEpochFixture);
       const { human, bot } = env.accounts;
       const h = await human.getAddress();
-      const p = generateRealProof({ timestamp: await time.latest(), seed: await env.contracts.adapter.currentNullifierSeed(), signal: h });
+      const p = await generateRealProof({ timestamp: await time.latest(), seed: await env.contracts.adapter.currentNullifierSeed(), signal: h });
       const data = forwardedData(env, h, encodeRealProofTakerArgs(p, false, h));
       const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
       const s = await forwardSwap(env, human, USDC(5_000), data);

@@ -4,7 +4,7 @@
 // Shared deployment + helpers for AegisJIT tests and the Mumbai demo script.
 
 import { BytesLike, Signer, Wallet, ContractTransactionReceipt, ContractTransactionResponse } from "ethers";
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { existsSync } from "fs";
 import * as path from "path";
 
@@ -72,14 +72,33 @@ export interface RealProof {
 }
 
 const PROVER_DIR = path.join(__dirname, "..", "..", "packages", "zk-aadhaar");
+
+/**
+ * Runs a JSON-printing prover CLI in a subprocess WITHOUT blocking the event loop. A synchronous
+ * spawn would stall the loop for the whole proving time (~13 s for Anon Aadhaar); against a live
+ * JSON-RPC node that leaves stale keep-alive sockets behind and the next request dies with
+ * ECONNRESET. Async spawn lets the HTTP client notice closed connections while we wait.
+ */
+function runJsonCli(pkgDir: string, args: string[]): Promise<any> {
+  const bin = path.join(pkgDir, "node_modules", ".bin", "tsx");
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { cwd: pkgDir, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { err += d; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`${path.basename(pkgDir)} prover ${args.slice(0, 2).join(" ")} failed (exit ${code}): ${err || out}`));
+      try { resolve(JSON.parse(out)); } catch (e) { reject(e); }
+    });
+  });
+}
+
 /** Real pipeline in a subprocess: synthetic V2 Secure QR -> zkAadhaar parse + RSA -> Groth16 (snarkjs) */
-export function generateRealProof(o: { timestamp: number; seed: bigint; signal: string }): RealProof {
+export function generateRealProof(o: { timestamp: number; seed: bigint; signal: string }): Promise<RealProof> {
   // signal = the beneficiary address the proof commits to
-  const r = spawnSync(path.join(PROVER_DIR, "node_modules", ".bin", "tsx"),
-    ["prover/cli.ts", "e2e", "--timestamp", String(o.timestamp), "--seed", o.seed.toString(), "--signal", o.signal],
-    { cwd: PROVER_DIR, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(`prover failed: ${r.stderr || r.error}`);
-  return JSON.parse(r.stdout);
+  return runJsonCli(PROVER_DIR, ["prover/cli.ts", "e2e", "--timestamp", String(o.timestamp), "--seed", o.seed.toString(), "--signal", o.signal]);
 }
 
 /**
@@ -126,23 +145,18 @@ export interface WorldIdProof {
   provingMs: number;
 }
 
-function worldIdCli(args: string[]): any {
-  const r = spawnSync(path.join(WORLD_ID_PROVER_DIR, "node_modules", ".bin", "tsx"), ["prover/cli.ts", ...args],
-    { cwd: WORLD_ID_PROVER_DIR, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(`world-id prover failed: ${r.stderr || r.error}`);
-  return JSON.parse(r.stdout);
-}
+const worldIdCli = (args: string[]): Promise<any> => runJsonCli(WORLD_ID_PROVER_DIR, ["prover/cli.ts", ...args]);
 
 /** Real Semaphore depth-30 Groth16 proof (subprocess, ~0.5 s) for a member of the local tree, bound to `signal` */
-export function generateWorldIdProof(o: { identity: string; signal: string; externalNullifier: bigint; members?: string[] }): WorldIdProof {
+export function generateWorldIdProof(o: { identity: string; signal: string; externalNullifier: bigint; members?: string[] }): Promise<WorldIdProof> {
   const args = ["prove", "--identity", o.identity, "--signal", o.signal, "--external-nullifier", o.externalNullifier.toString()];
   if (o.members) args.push("--members", o.members.join(","));
   return worldIdCli(args);
 }
 
 /** Root of the local tree (what the sequencer publishes to the router) */
-export function worldIdTreeRoot(members?: string[]): bigint {
-  return BigInt(worldIdCli(members ? ["root", "--members", members.join(",")] : ["root"]).root);
+export async function worldIdTreeRoot(members?: string[]): Promise<bigint> {
+  return BigInt((await worldIdCli(members ? ["root", "--members", members.join(",")] : ["root"])).root);
 }
 
 /** 0x2A type-1 taker args for a World ID proof: [L][0x01][nullifierHash][abi.encode(root, [recipient,] uint256[8])] */
@@ -391,7 +405,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     const seed = opts.seed ?? (await adapter.currentNullifierSeed());
     if (cfg.zkBackend === "groth16") {
       const ts = opts.timestamp ?? BigInt((await ethers.provider.getBlock("latest"))!.timestamp);
-      return encodeRealProofTakerArgs(generateRealProof({ timestamp: Number(ts), seed, signal: taker }), false, opts.recipient);
+      return encodeRealProofTakerArgs(await generateRealProof({ timestamp: Number(ts), seed, signal: taker }), false, opts.recipient);
     }
     if (cfg.zkBackend === "ecdsa") {
       const hash = zkAttestationHash(chainId, addr.verifier, taker, nullifier, reveal);
@@ -426,7 +440,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
       // Real proof: `person` is an identity seed in the local tree (default "human"); the deployer
       // (sequencer) publishes the tree root to the router if it is not the latest one already.
       const externalNullifier: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
-      const p = generateWorldIdProof({ identity: opts.person ?? "human", signal: taker, externalNullifier, members: opts.members });
+      const p = await generateWorldIdProof({ identity: opts.person ?? "human", signal: taker, externalNullifier, members: opts.members });
       if (opts.root === undefined) {
         if ((await worldIdRouter.latestRoot()) !== BigInt(p.root)) {
           await (await worldIdRouter.connect(deployer).registerRoot(BigInt(p.root))).wait();

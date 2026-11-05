@@ -16,7 +16,7 @@ const KIND_STYLE: Record<FrameKind, { chip: string; text: string; ring: string; 
 };
 
 const PROFILES: Record<Profile, { title: string; sub: string; amount: number }> = {
-  human: { title: "Verified Human", sub: "Anon Aadhaar ZK proof attached · signal = taker", amount: 5_000 },
+  human: { title: "Verified Human", sub: "World ID or ZK Aadhaar pass attached · signal = taker", amount: 5_000 },
   bot: { title: "Unverified MEV Bot", sub: "no proof · full base fee + surge", amount: 50_000 },
   split: { title: "Split-Order Attacker", sub: "5 × legs in one rolling window", amount: 50_000 },
   whale: { title: "Whale", sub: "tries to drain the vault", amount: 500_000 },
@@ -27,7 +27,7 @@ const weth = (v: bigint, dp = 4) => fmtUnits(v, WETH_DEC, dp);
 const shortHex = (h: string) => `${h.slice(0, 10)}…${h.slice(-6)}`;
 const bps = (fee: bigint, amt: bigint) => (amt === 0n ? "—" : `${(Number(fee * 1_000_000n / amt) / 100).toFixed(2)} bps`);
 
-interface LogEntry { t: string; profile: Profile; amountIn: bigint; quoteOut?: bigint; actualOut?: bigint; hash: Hex; gas: bigint; note?: string }
+interface LogEntry { t: string; profile: Profile; pass?: string; amountIn: bigint; quoteOut?: bigint; actualOut?: bigint; hash: Hex; gas: bigint; note?: string }
 
 export default function App() {
   const [dep, setDep] = useState<Deployment | null>(null);
@@ -97,7 +97,7 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
         {order ? <Disassembler dep={dep} order={order} shipTx={shipTx} zk={attached} /> : <Card title="SwapVM bytecode"><p className="text-slate-500 text-sm">Fetching order from Aqua Shipped event…</p></Card>}
         <div className="flex flex-col gap-6">
           <ZkPass dep={dep} client={client} attached={attached} onAttach={setAttached} />
-          <Simulator dep={dep} client={client} state={state} humanData={attached?.data} onDone={async (e) => { setLog((l) => [...e, ...l]); await refresh(); }} />
+          <Simulator dep={dep} client={client} state={state} humanData={attached?.data} humanLabel={attached?.label} onDone={async (e) => { setLog((l) => [...e, ...l]); await refresh(); }} />
           {state && <VaultPanel dep={dep} state={state} />}
           <ActivityLog log={log} />
         </div>
@@ -165,8 +165,10 @@ function Disassembler({ dep, order, shipTx, zk }: { dep: Deployment; order: Orde
                 <code className={`font-bold ${st.text}`}>0x{f.opcode.toString(16).padStart(2, "0")}</code>
                 <span className="font-medium text-slate-100">{f.name}</span>
                 {f.kind === "zk" && (
-                  <span className={`text-[11px] px-2 py-0.5 rounded border ${zk?.verified ? "border-emerald-500 text-emerald-200 bg-emerald-500/20" : "border-slate-700 text-slate-400"}`}>
-                    {zk?.verified ? "PASSED (Real Groth16 verified · ecPairing 0x08)" : "awaiting proof → unverified takers priced as bots"}
+                  <span data-testid="zk-status" className={`text-[11px] px-2 py-0.5 rounded border ${zk?.verified ? "border-emerald-500 text-emerald-200 bg-emerald-500/20" : zk ? "border-rose-600 text-rose-200 bg-rose-500/10" : "border-slate-700 text-slate-400"}`}>
+                    {zk?.verified
+                      ? (zk.kind === "worldid" ? "PASSED (World ID Verified · type 1 · Semaphore Groth16 · ecPairing 0x08)" : "PASSED (Groth16 Aadhaar Verified · type 2 · ecPairing 0x08)")
+                      : zk ? `FAILED (${zk.label} rejected → priced as a bot)` : "awaiting proof → unverified takers priced as bots"}
                   </span>
                 )}
                 <span className="ml-auto text-[11px] text-slate-500">pc {f.pc} · {f.hex.length / 2 - 3} B args</span>
@@ -187,7 +189,7 @@ function Disassembler({ dep, order, shipTx, zk }: { dep: Deployment; order: Orde
 }
 
 // ------------------------------------------------------------------ simulator
-function Simulator({ dep, client, state, humanData, onDone }: { dep: Deployment; client: AegisClient; state: ChainState | null; humanData?: Hex; onDone: (e: LogEntry[]) => Promise<void> }) {
+function Simulator({ dep, client, state, humanData, humanLabel, onDone }: { dep: Deployment; client: AegisClient; state: ChainState | null; humanData?: Hex; humanLabel?: string; onDone: (e: LogEntry[]) => Promise<void> }) {
   const [profile, setProfile] = useState<Profile>("human");
   const [amount, setAmount] = useState(PROFILES.human.amount);
   const [q, setQ] = useState<QuoteResult | null>(null);
@@ -222,7 +224,7 @@ function Simulator({ dep, client, state, humanData, onDone }: { dep: Deployment;
       const quoteOut = s.quote.ok ? s.quote.amountOut : undefined;
       const note = s.reverted ? (s.quote.ok ? "reverted" : `reverted: ${s.quote.error}`) : undefined;
       setLast({ quoteOut, actualOut: s.amountOut, hash: s.hash, note });
-      await onDone([{ t: new Date().toLocaleTimeString(), profile, amountIn, quoteOut, actualOut: s.amountOut, hash: s.hash, gas: s.gasUsed, note }]);
+      await onDone([{ t: new Date().toLocaleTimeString(), profile, pass: human ? (humanLabel ?? "seeded ZK Aadhaar") : undefined, amountIn, quoteOut, actualOut: s.amountOut, hash: s.hash, gas: s.gasUsed, note }]);
     } finally { setBusy(false); }
   };
 
@@ -251,8 +253,8 @@ function Simulator({ dep, client, state, humanData, onDone }: { dep: Deployment;
       </div>
 
       {human && (
-        <p className={`text-[11px] mb-2 ${humanData ? "text-emerald-300" : "text-slate-500"}`}>
-          {humanData ? "✔ Using the real Groth16 proof from the Aadhaar ZK Pass" : "Using the seeded real Groth16 proof (attach a fresh one from the ZK Pass above)"}
+        <p className={`text-[11px] mb-2 ${humanData ? "text-emerald-300" : "text-slate-500"}`} data-testid="human-pass">
+          {humanData ? `✔ Using the attached ${humanLabel} proof from the ZK Pass` : "Using the seeded ZK Aadhaar proof (attach a World ID or Aadhaar pass above)"}
         </p>
       )}
       <label className="flex items-center justify-between text-xs text-slate-400 mb-1">
@@ -387,7 +389,7 @@ function ActivityLog({ log }: { log: LogEntry[] }) {
         <tbody>
           {log.map((e, i) => (
             <tr key={i} className="border-t border-slate-800">
-              <td className="py-1 text-slate-500">{e.t}</td><td>{PROFILES[e.profile].title}</td>
+              <td className="py-1 text-slate-500">{e.t}</td><td>{PROFILES[e.profile].title}{e.pass ? <span className="text-slate-500"> · {e.pass}</span> : null}</td>
               <td className="text-right">{usdc(e.amountIn, 0)}</td>
               <td className="text-right">{e.actualOut !== undefined ? weth(e.actualOut) : <span className="text-rose-300">reverted</span>}</td>
               <td className="text-right">{e.actualOut !== undefined && e.quoteOut !== undefined ? `${e.actualOut - e.quoteOut} wei` : "—"}</td>
