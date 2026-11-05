@@ -16,7 +16,8 @@ interpreter loop:
 yarn                                     # install
 npx hardhat test                         # 67 Hardhat tests (64 AegisJIT + 3 template)
 forge test                               # Foundry fuzzing of the fee math (5 properties × 5,000 runs)
-npx hardhat run scripts/demo-mumbai.ts   # 3-minute judge demo
+npx hardhat run scripts/demo-mumbai.ts   # 3-minute judge demo (in-process network)
+npx hardhat node & npx hardhat run --network localhost scripts/demo-mumbai.ts   # same, on a real JSON-RPC node
 ```
 
 ---
@@ -170,6 +171,11 @@ and vault balances before and after each one:
 | 1 · Verified human, 5,000 USDC → WETH | `0x2A` pass → 0.15% fee, better fill than a bot; quote == swap |
 | 2 · Unverified bot, 50,000 USDC → WETH | `0x7A` surge: 150 USDC base + 420 USDC surge (1.14% effective) |
 | 3 · Toxic whale, 500,000 USDC → WETH | **reverted** by `0x9A` (`JITExposureCapExceeded`); vault untouched, 75% structurally out of reach |
+| 4 · Split attack, 5 × 10,000 vs 1 × 50,000 USDC | fresh window, snapshot/revert A/B: split pays **the same** 503.40 USDC fee and gets 0.0011 WETH **less**; a stateless fee would have charged 150 USDC |
+
+For each filled swap the demo prints the decoded ERC-20 `Transfer` trace: vault share burn →
+WETH out of the vault → `Aqua.pull` to the taker → taker USDC → router → `Aqua.push` to the
+Maker → hook → vault deposit and share mint.
 
 ## Project structure
 

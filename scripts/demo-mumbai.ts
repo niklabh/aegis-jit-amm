@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // AegisJIT — ETHGlobal Mumbai 2026 judge demo
-//   npx hardhat run scripts/demo-mumbai.ts
+//   npx hardhat run scripts/demo-mumbai.ts                      (in-process network)
+//   npx hardhat node  &&  npx hardhat run --network localhost scripts/demo-mumbai.ts
 //
 // Deploys Aqua, WETHMock, USDC, 2x MockERC4626Vault (1,000,000 USDC + 400 WETH), the
 // MockAnonIdentityVerifier and AegisSwapVMRouter, ships the Maker's self-custodial AegisJIT
 // strategy to Aqua and runs three live on-chain scenarios.
 
-import { deployAegis, USDC, WETH, AegisEnv } from "../test/utils/aegisFixture";
+import { deployAegis, USDC, AegisEnv } from "../test/utils/aegisFixture";
 import { AegisOpcodes, AegisProgramBuilder, FEE_BPS } from "../src/aegisProgramBuilder";
 
 const { ethers } = require("hardhat");
@@ -72,12 +73,50 @@ async function surgeFeeBreakdown(env: AegisEnv, gross: bigint, human: boolean) {
   return { total, baseFee, surgeFee: total - baseFee, excess, priorFlow: F, expectedOut };
 }
 
+
+// ---------- on-chain token transfer trace ----------
+const ERC20_EVENTS = new ethers.Interface([
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)",
+  "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
+]);
+
+async function transferTrace(env: AegisEnv, receipt: any, title: string) {
+  const name: Record<string, string> = {};
+  const tag = (a: string, n: string) => { name[a.toLowerCase()] = n; };
+  tag(env.addr.maker, "Maker"); tag(env.addr.router, "Router"); tag(env.addr.aqua, "Aqua"); tag(env.addr.hook, "JITHook");
+  tag(env.addr.usdcVault, "avUSDC"); tag(env.addr.wethVault, "avWETH"); tag(ethers.ZeroAddress, "0x0 (mint/burn)");
+  tag(await env.accounts.human.getAddress(), "Human"); tag(await env.accounts.bot.getAddress(), "Bot");
+  tag(await env.accounts.whale.getAddress(), "Whale");
+  const token: Record<string, [string, (v: bigint) => string]> = {
+    [env.addr.usdc.toLowerCase()]: ["USDC", (v) => fmtUsdc(v)],
+    [env.addr.weth.toLowerCase()]: ["WETH", (v) => fmtWeth(v, 6)],
+    [env.addr.usdcVault.toLowerCase()]: ["avUSDC share", (v) => fmtUsdc(v)],
+    [env.addr.wethVault.toLowerCase()]: ["avWETH share", (v) => fmtWeth(v, 6)],
+  };
+  const lbl = (a: string) => name[a.toLowerCase()] ?? short(a);
+  const rows: string[][] = [];
+  for (const log of receipt.logs) {
+    let ev; try { ev = ERC20_EVENTS.parseLog(log); } catch { continue; }
+    if (!ev || ev.name !== "Transfer") continue;
+    const t = token[log.address.toLowerCase()];
+    if (!t) continue;
+    rows.push([String(log.index), t[0], lbl(ev.args.from), lbl(ev.args.to), t[1](ev.args.value)]);
+  }
+  console.log(`${C.dim}${title} — ${rows.length} ERC-20 Transfer events in tx ${short(receipt.hash)}${C.reset}`);
+  grid(["log#", "Token", "From", "To", "Amount"], rows);
+}
+
+async function rpc(method: string, params: unknown[] = []) {
+  return ethers.provider.send(method, params);
+}
+
 async function main() {
   console.log(`\n${C.bold}${C.magenta}   ▄▀█ █▀▀ █▀▀ █ █▀   ░░█ █ ▀█▀    AegisJIT · Custom-Opcode AMM & Self-Custodial JIT Vault${C.reset}`);
   console.log(`${C.bold}${C.magenta}   █▀█ ██▄ █▄█ █ ▄█   █▄█ █ ░█░    1inch Aqua + SwapVM · ETHGlobal Mumbai 2026${C.reset}`);
 
   banner("0 · Deploy & register the Maker's self-custodial strategy");
-  const env = await deployAegis();
+  const env = await deployAegis({ zkBackend: "anonAadhaar" });
   const { human, bot, whale } = env.accounts;
   const { router } = env.contracts;
 
@@ -85,7 +124,8 @@ async function main() {
     ["Aqua", env.addr.aqua],
     ["AegisSwapVMRouter", env.addr.router],
     ["AegisJITVaultHook", env.addr.hook],
-    ["MockAnonIdentityVerifier", env.addr.verifier],
+    ["AnonAadhaarAdapter (0x2A verifier)", env.addr.adapter],
+    ["MockGroth16AnonAadhaar", env.addr.anonAadhaar],
     ["USDC (6 dp)", env.addr.usdc],
     ["WETHMock", env.addr.weth],
     ["avUSDC  MockERC4626Vault", env.addr.usdcVault],
@@ -127,7 +167,7 @@ async function main() {
     const s = await env.swap(human, amount, data);
     const after = await env.vaultAssets();
     table("0x2A ZK pass → 0x7A human tier (50% base-fee discount) → settled via Aqua", [
-      ["proof", `issuer-signed Anon-Aadhaar reveal [age>18=1, state=27 Maharashtra], bound to ${short(hAddr)}`],
+      ["proof", `Anon Aadhaar Groth16 (mock verifier) · reveal [age>18=1, state=27] · signal = ${short(hAddr)}`],
       ["quote()  (static)", `${fmtWeth(q.amountOut, 6)} WETH`],
       ["swap()   (executed)", `${fmtWeth(s.amountOut, 6)} WETH  ${s.amountOut === q.amountOut ? C.green + "== quote ✔" + C.reset : C.red + "!= quote" + C.reset}`],
       ["same trade as unverified bot", `${fmtWeth(botQuote.amountOut, 6)} WETH  (human gets +${fmtWeth(q.amountOut - botQuote.amountOut, 6)} WETH)`],
@@ -136,6 +176,7 @@ async function main() {
       ["avUSDC (Maker)", `${fmtUsdc(before.usdc)}  →  ${fmtUsdc(after.usdc)}   (+${fmtUsdc(after.usdc - before.usdc)} re-deposited JIT)`],
       ["avWETH (Maker)", `${fmtWeth(before.weth)}  →  ${fmtWeth(after.weth)}   (−${fmtWeth(before.weth - after.weth)} withdrawn JIT)`],
     ]);
+    await transferTrace(env, s.receipt, "Scenario 1 settlement: JIT withdraw → Aqua pull → taker push → JIT re-deposit");
     results.push({ name: "1 Human retail", tier: C.green + "ZK verified" + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
       price: fmtUsdc(amount * 10n ** 18n / s.amountOut), fee: pct(fee.total, amount, 3), gas: s.receipt.gasUsed.toString(), hash: short(s.receipt.hash), status: C.green + "filled" + C.reset });
   }
@@ -162,6 +203,7 @@ async function main() {
       ["avUSDC (Maker)", `${fmtUsdc(before.usdc)}  →  ${fmtUsdc(after.usdc)}`],
       ["avWETH (Maker)", `${fmtWeth(before.weth)}  →  ${fmtWeth(after.weth)}`],
     ]);
+    await transferTrace(env, s.receipt, "Scenario 2 settlement");
     results.push({ name: "2 Arb bot", tier: C.yellow + "unverified" + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
       price: fmtUsdc(amount * 10n ** 18n / s.amountOut), fee: pct(fee.total, amount, 3), gas: s.receipt.gasUsed.toString(), hash: short(s.receipt.hash), status: C.green + "filled" + C.reset });
   }
@@ -178,11 +220,22 @@ async function main() {
       await router.connect(whale).swap(env.order, amount, data, { gasLimit: 2_000_000 });
       decoded = C.red + "UNEXPECTED: swap succeeded" + C.reset;
     } catch (e: any) {
-      const raw = e?.data ?? e?.error?.data ?? e?.info?.error?.data;
+      // Error shapes differ between the in-process network and a JSON-RPC node: search for them
+      const find = (x: any, keys: string[], ok: (v: any) => boolean, depth = 0): any => {
+        if (x == null || depth > 6) return undefined;
+        if (ok(x)) return x;
+        if (typeof x !== "object") return undefined;
+        for (const k of keys) { const r = find(x[k], keys, ok, depth + 1); if (r !== undefined) return r; }
+        return undefined;
+      };
+      const raw = find(e, ["data", "error", "info", "revert"], (v) => typeof v === "string" && /^0x[0-9a-fA-F]{8}/.test(v));
       const err = raw ? router.interface.parseError(raw) : null;
       decoded = err ? `${err.name}(${err.args.map((a: bigint) => fmtWeth(a, 4) + " WETH").join(", ")})` : (e.shortMessage ?? String(e));
-      const block = await ethers.provider.getBlock("latest", true);
-      const txh = block?.prefetchedTransactions?.find((t: any) => t.to?.toLowerCase() === env.addr.router.toLowerCase())?.hash;
+      let txh: string | undefined = find(e, ["data", "error", "info", "txHash", "transactionHash"], (v) => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v));
+      if (!txh) {
+        const block = await ethers.provider.getBlock("latest", true);
+        txh = block?.prefetchedTransactions?.find((t: any) => t.to?.toLowerCase() === env.addr.router.toLowerCase())?.hash;
+      }
       if (txh) {
         const rc = await ethers.provider.getTransactionReceipt(txh);
         if (rc && rc.status === 0) { hash = short(txh); gas = rc.gasUsed.toString(); }
@@ -199,6 +252,54 @@ async function main() {
     ]);
     results.push({ name: "3 Toxic whale", tier: C.yellow + "unverified" + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: "0 WETH",
       price: "—", fee: "—", gas, hash, status: C.red + "blocked 0x9A" + C.reset });
+  }
+
+
+  // ---------------- Scenario 4 ----------------
+  banner("4 · Split-attack defeat: 1 x 50,000 vs 5 x 10,000 USDC in one rolling window");
+  {
+    await rpc("evm_increaseTime", [env.cfg.decayWindowSec + 1]); // start from a fresh 0x7A window
+    await rpc("evm_mine");
+    const data = env.takerData({ tokenIn: env.addr.usdc });
+    const snap = await rpc("evm_snapshot");
+
+    const singleFee = await surgeFeeBreakdown(env, USDC(50_000), false);
+    const single = await env.swap(bot, USDC(50_000), data);
+    await rpc("evm_revert", [snap]);
+
+    const legs: Array<{ fee: Awaited<ReturnType<typeof surgeFeeBreakdown>>; out: bigint; hash: string; gas: bigint; naiveFee: bigint }> = [];
+    for (let i = 0; i < 5; i++) {
+      const fee = await surgeFeeBreakdown(env, USDC(10_000), false);
+      // counterfactual: what a stateless per-trade fee (fresh window every trade) would charge
+      const aq = await env.aquaBalances();
+      const virtualIn = aq.usdc + env.cfg.usdcLiquidity * BigInt(env.cfg.virtualBoostBps - 10_000) / 10_000n;
+      const t = virtualIn * env.cfg.impactThresholdBps / 10_000n;
+      const g = USDC(10_000);
+      const naiveFee = (g * BigInt(env.cfg.baseFeeBps) + (g > t ? g - t : 0n) * BigInt(env.cfg.maxSurgeFeeBps - env.cfg.baseFeeBps) + FEE_BPS - 1n) / FEE_BPS;
+      const s = await env.swap(bot, g, data);
+      if (s.amountOut !== fee.expectedOut) throw new Error(`leg ${i + 1}: model mismatch`);
+      legs.push({ fee, out: s.amountOut, hash: short(s.receipt.hash), gas: s.receipt.gasUsed, naiveFee });
+    }
+    const splitFee = legs.reduce((a, l) => a + l.fee.total, 0n);
+    const splitSurge = legs.reduce((a, l) => a + l.fee.surgeFee, 0n);
+    const splitOut = legs.reduce((a, l) => a + l.out, 0n);
+    const naiveTotal = legs.reduce((a, l) => a + l.naiveFee, 0n);
+
+    grid(["Trade", "Window flow before", "Base fee", "Surge fee", "Total fee", "WETH out", "Tx"], [
+      ["1 x 50,000", fmtUsdc(singleFee.priorFlow), fmtUsdc(singleFee.baseFee), fmtUsdc(singleFee.surgeFee), fmtUsdc(singleFee.total), fmtWeth(single.amountOut, 6), short(single.receipt.hash) + C.dim + " (reverted to snapshot)" + C.reset],
+      ...legs.map((l, i) => [`leg ${i + 1}/5 x 10,000`, fmtUsdc(l.fee.priorFlow), fmtUsdc(l.fee.baseFee), fmtUsdc(l.fee.surgeFee), fmtUsdc(l.fee.total), fmtWeth(l.out, 6), l.hash]),
+      [C.bold + "5-part split total" + C.reset, "", "", fmtUsdc(splitSurge), fmtUsdc(splitFee), fmtWeth(splitOut, 6), ""],
+    ]);
+    const feeOk = splitFee >= singleFee.total;
+    const outOk = splitOut <= single.amountOut;
+    table("0x7A rolling-window accumulator vs split gaming", [
+      ["split fee >= single fee", `${fmtUsdc(splitFee)} >= ${fmtUsdc(singleFee.total)} USDC  ${feeOk ? C.green + "✔" : C.red + "✘"}${C.reset}`],
+      ["split WETH out <= single", `${fmtWeth(splitOut, 6)} <= ${fmtWeth(single.amountOut, 6)}  ${outOk ? C.green + "✔ sub-additive" : C.red + "✘"}${C.reset}`],
+      ["stateless per-trade fee would charge", `${C.yellow}${fmtUsdc(naiveTotal)} USDC${C.reset}  (each 10k leg below threshold → surge dodged; counterfactual, off-chain)`],
+    ]);
+    if (!feeOk || !outOk) throw new Error("split-attack invariant violated");
+    results.push({ name: "4 Split 5x10k", tier: C.yellow + "unverified" + C.reset, inStr: "50,000 USDC", outStr: `${fmtWeth(splitOut)} WETH`,
+      price: fmtUsdc(USDC(50_000) * 10n ** 18n / splitOut), fee: pct(splitFee, USDC(50_000), 3), gas: legs.reduce((a, l) => a + l.gas, 0n).toString(), hash: "5 txs", status: C.green + "no gain" + C.reset });
   }
 
   // ---------------- Summary ----------------
