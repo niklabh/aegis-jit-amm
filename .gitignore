@@ -44,3 +44,8 @@ deployments/hardhat/
 out-forge/
 cache-forge/
 .hardhat-node.log
+
+# Never commit real Aadhaar data or large ZK artifacts
+*.pdf
+private/
+.cache/

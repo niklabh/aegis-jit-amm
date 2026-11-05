@@ -289,7 +289,9 @@ calls or interfaces with SwapVM.
 | `LicenseRef-Degensoft-SwapVM-1.1` | `contracts/AegisSwapVMRouter.sol`, `contracts/instructions/*`, `contracts/AegisJITStrategy.sol`, `contracts/libs/AegisOpcodes.sol`, `test/foundry/SurgeFeeMath.t.sol` | Inherit or import SwapVM implementation code (`SwapVM`, `AquaOpcodes`, `ContextLib`, `MinRate`, arg builders) and are compiled into the router runtime |
 | `LicenseRef-Degensoft-SwapVM-1.1` | `src/aegisProgramBuilder.ts`, `test/utils/aegisFixture.ts` | Import the swap-vm-template helper `test/utils/SwapVMHelpers.ts` |
 | `LicenseRef-Degensoft-SwapVM-1.1` (unchanged template files) | `AquaAMM.sol`, `MockTaker.sol`, `deploy/`, `test/AquaAMM.test.ts`, `test/utils/{fixtures,ProgramBuilder,SwapVMHelpers}.ts` | Original swap-vm-template |
-| `MIT` | `contracts/interfaces/IZKVerifier.sol`, `contracts/zk/*`, `contracts/AegisJITVaultHook.sol`, `contracts/mocks/*`, `test/*.test.ts` (AegisJIT), `scripts/*`, `ui/` | Independent code that only implements or calls interfaces (`IMakerHooks`, `ISwapVM`) or talks to deployed contracts via ABI/RPC (§3.3) |
+| `GPL-3.0` (unmodified vendor) | `contracts/zk/vendor/anon-aadhaar/Verifier.sol` | snarkjs-generated Groth16 verifier from Anon Aadhaar v2; deployed separately and called via an independently written interface |
+| `MIT` | `packages/zk-aadhaar/` (Aadhaar Secure-QR scanner/parser/RSA verifier + Node Groth16 prover) | Independent; reuses circuit-input encoding from `@anon-aadhaar/core` (MIT, Ethereum Foundation) |
+| `MIT` | `contracts/interfaces/IZKVerifier.sol`, `contracts/zk/*.sol`, `contracts/AegisJITVaultHook.sol`, `contracts/mocks/*`, `test/*.test.ts` (AegisJIT), `scripts/*`, `ui/` | Independent code that only implements or calls interfaces (`IMakerHooks`, `ISwapVM`) or talks to deployed contracts via ABI/RPC (§3.3) |
 
 Full texts: [LICENSE](LICENSE), [LICENSES/](LICENSES/),
 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). SwapVM-1.1 makes hackathon and non-commercial

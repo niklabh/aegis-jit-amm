@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --animate-scan: scan 2.6s ease-in-out infinite;
+
+  @keyframes scan {
+    0%,
+    100% {
+      top: 7%;
+    }
+    50% {
+      top: 93%;
+    }
+  }
+}
+
+:root {
+  color-scheme: light dark;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  padding-bottom: env(safe-area-inset-bottom);
+}

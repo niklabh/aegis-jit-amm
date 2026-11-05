@@ -1,0 +1,51 @@
+{
+  "name": "zk-aadhaar",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/copy-wasm.mjs && next dev",
+    "dev:https": "node scripts/copy-wasm.mjs && next dev --experimental-https",
+    "build": "node scripts/copy-wasm.mjs && next build && node scripts/postbuild.mjs",
+    "preview": "node scripts/serve-out.mjs",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p prover",
+    "test": "vitest run",
+    "test:real": "vitest run tests/real-qr.test.ts",
+    "certs:embed": "node scripts/embed-uidai-certs.mjs",
+    "demo:generate": "node scripts/make-demo.mjs",
+    "prover:fetch": "node prover/fetch-artifacts.mjs",
+    "prover:e2e": "tsx prover/cli.ts e2e"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "dependencies": {
+    "@zxing/library": "^0.23.0",
+    "jpeg2000": "^1.1.1",
+    "lucide-react": "^1.68.0",
+    "next": "^16.4.5",
+    "pako": "^3.0.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zxing-wasm": "^3.1.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "^4.3.4",
+    "@types/node": "^22.20.5",
+    "@types/pngjs": "^6.0.5",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.4.5",
+    "js-sha3": "^0.8.0",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4",
+    "snarkjs": "^0.7.5",
+    "tailwindcss": "^4.3.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "license": "MIT"
+}

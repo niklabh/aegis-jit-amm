@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    "esModuleInterop": true,
+    "types": [
+      "node"
+    ],
+    "baseUrl": "..",
+    "paths": {
+      "@/*": [
+        "src/*"
+      ]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "../src/lib/aadhaar/**/*.ts",
+    "../scripts/lib/*.mjs"
+  ]
+}
