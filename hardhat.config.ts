@@ -38,6 +38,13 @@ const config: HardhatUserConfig = {
       accounts: deployerAccounts(),
       timeout: 120_000, // public / free-tier RPCs occasionally stall; the deploy script also retries and resumes
     },
+    worldchainSepolia: {
+      // World Chain Sepolia (chainId 4801): the legacy World ID Router lives at 0x57f928158C3EE7CDad1e4D8642503c4D0201f611
+      url: process.env.WORLDCHAIN_SEPOLIA_RPC_URL || "https://worldchain-sepolia.g.alchemy.com/public",
+      chainId: 4801,
+      accounts: deployerAccounts(),
+      timeout: 120_000,
+    },
     // Add your deployment network here and the corresponding URL in the .env file
   },
   namedAccounts: {
@@ -95,6 +102,13 @@ const config: HardhatUserConfig = {
   etherscan: {
     // A single key selects Etherscan's API V2 (one key for every chain); the per-network map used the retired V1 endpoints
     apiKey: process.env.ETHERSCAN_API_KEY || "",
+    customChains: [
+      {
+        network: "worldchainSepolia",
+        chainId: 4801,
+        urls: { apiURL: "https://api.etherscan.io/v2/api?chainid=4801", browserURL: "https://sepolia.worldscan.org" },
+      },
+    ],
   }
 };
 

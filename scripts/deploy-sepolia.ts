@@ -2,6 +2,9 @@
 // Deploys the complete AegisJIT demo stack on a public network (Sepolia) and ships the Maker's strategy.
 //   npx hardhat run --network sepolia scripts/deploy-sepolia.ts
 //   ORDER_SALT=1 npx hardhat run --network sepolia scripts/deploy-sepolia.ts   # reuse the contracts, ship a fresh order
+//   WORLD_ID_ROUTER=0x57f9… npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts
+//                                              # real World ID Router instead of the mock; app id from WORLD_ID_APP_ID
+//                                              # (falls back to WORLD_ID_STAGING_APP_ID, then the local placeholder id)
 //
 // Resumable and idempotent: every deployed contract is checkpointed to deployments/<network>/aegis.partial.json
 // and every setup step checks on-chain state before sending (balances, allowances, vault positions, Aqua
@@ -45,7 +48,7 @@ const CFG = {
   maxProofAge: 30 * 24 * 3600,
   epochDuration: 24 * 3600,
   epochGrace: 600,
-  worldIdAppId: "app_staging_aegis_jit_mumbai",
+  worldIdAppId: process.env.WORLD_ID_APP_ID || process.env.WORLD_ID_STAGING_APP_ID || "app_staging_aegis_jit_mumbai",
   worldIdAction: "aegis-jit-fee-tier",
   worldIdEpochDuration: 0,
   worldIdEpochGrace: 600,
@@ -55,6 +58,8 @@ const CFG = {
   fundTakerEth: process.env.FUND_TAKER_ETH ?? "0.25",
 };
 
+/** A real World ID Router address makes the deployment verify World App / Simulator proofs instead of the local tree */
+const WORLD_ID_ROUTER = process.env.WORLD_ID_ROUTER ?? "";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isConnectionError = (e: any) => /timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket|network error|fetch failed|other side closed|503|502|429/i.test(String(e?.message ?? e));
 
@@ -177,14 +182,23 @@ async function main() {
     await groth16.getAddress(), AEGIS_NULLIFIER_SEED, CFG.epochDuration, CFG.epochGrace, CFG.maxProofAge, 0n,
   ]);
 
-  // World ID: World ID's real SemaphoreVerifier behind the mock router; the local tree's root is the initial root
-  const semaphore = await deploy<any>("semaphoreVerifier", "contracts/zk/vendor/world-id/SemaphoreVerifier.sol:SemaphoreVerifier");
-  const initialRoot: bigint = worldIdArtifactsAvailable() ? await worldIdTreeRoot() : WORLD_ID_INITIAL_ROOT;
-  const worldIdRouter = await deploy<any>("worldIdRouter", "MockWorldIDRouter", [
-    await semaphore.getAddress(), deployerAddr, WORLD_ID_GROUP, initialRoot, CFG.rootHistoryExpiry,
-  ]);
+  // World ID: either the REAL World ID Router of this chain (World App / Simulator proofs), or World ID's real
+  // SemaphoreVerifier behind the project's mock router with the local tree's root as the initial root
+  let worldIdRouterAddr: string;
+  if (WORLD_ID_ROUTER) {
+    if ((await ethers.provider.getCode(WORLD_ID_ROUTER)) === "0x") throw new Error(`WORLD_ID_ROUTER ${WORLD_ID_ROUTER} has no code on ${network.name}`);
+    worldIdRouterAddr = WORLD_ID_ROUTER;
+    console.log(`  ${C.green}✔${C.reset} worldIdRouter      ${worldIdRouterAddr}  ${C.dim}(World ID's router on this chain, not deployed by us)${C.reset}`);
+  } else {
+    const semaphore = await deploy<any>("semaphoreVerifier", "contracts/zk/vendor/world-id/SemaphoreVerifier.sol:SemaphoreVerifier");
+    const initialRoot: bigint = worldIdArtifactsAvailable() ? await worldIdTreeRoot() : WORLD_ID_INITIAL_ROOT;
+    const worldIdRouter = await deploy<any>("worldIdRouter", "MockWorldIDRouter", [
+      await semaphore.getAddress(), deployerAddr, WORLD_ID_GROUP, initialRoot, CFG.rootHistoryExpiry,
+    ]);
+    worldIdRouterAddr = await worldIdRouter.getAddress();
+  }
   const worldIdAdapter = await deploy<any>("worldIdAdapter", "WorldIDAdapter", [
-    await worldIdRouter.getAddress(), WORLD_ID_GROUP, CFG.worldIdAppId, CFG.worldIdAction, CFG.worldIdEpochDuration, CFG.worldIdEpochGrace,
+    worldIdRouterAddr, WORLD_ID_GROUP, CFG.worldIdAppId, CFG.worldIdAction, CFG.worldIdEpochDuration, CFG.worldIdEpochGrace,
   ]);
   checkpoint();
 
@@ -277,10 +291,13 @@ async function main() {
     order, orderHash,
     ship: { txHash: shipRc.hash, blockNumber: shipRc.blockNumber },
     ...(previousOrders.length ? { previousOrders } : {}),
+    worldId: { router: worldIdRouterAddr, mock: !WORLD_ID_ROUTER, appId: CFG.worldIdAppId, action: CFG.worldIdAction },
     notes: [
       "USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).",
       "MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.",
-      "World ID: MockWorldIDRouter (router + identity-manager semantics) in front of World ID's real SemaphoreVerifier; identity tree = packages/world-id local tree.",
+      WORLD_ID_ROUTER
+        ? `World ID: the chain's World ID Router (${WORLD_ID_ROUTER}); proofs come from World App / the World ID Simulator via IDKit for app ${CFG.worldIdAppId}, action ${CFG.worldIdAction}.`
+        : "World ID: MockWorldIDRouter (router + identity-manager semantics) in front of World ID's real SemaphoreVerifier; identity tree = packages/world-id local tree.",
       "ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.",
       "Order deadline: 30 days after deployment.",
     ],

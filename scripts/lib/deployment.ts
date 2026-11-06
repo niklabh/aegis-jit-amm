@@ -31,6 +31,8 @@ export interface DeploymentRecord {
   order: { maker: string; traits: string; data: string };
   orderHash: string;
   ship: { txHash: string; blockNumber: number };
+  /** World ID wiring: the router the adapter verifies against, whether it is the project's mock, app id and action */
+  worldId?: { router: string; mock: boolean; appId: string; action: string };
   notes: string[];
 }
 
@@ -80,7 +82,7 @@ export function takerWallets(): Record<TakerRole, HDNodeWallet> {
 }
 
 export function explorerBase(chainId: number): string | null {
-  return ({ 11155111: "https://sepolia.etherscan.io", 1: "https://etherscan.io" } as Record<number, string>)[chainId] ?? null;
+  return ({ 11155111: "https://sepolia.etherscan.io", 1: "https://etherscan.io", 4801: "https://sepolia.worldscan.org", 480: "https://worldscan.org" } as Record<number, string>)[chainId] ?? null;
 }
 
 export const addressLink = (chainId: number, a: string) => { const b = explorerBase(chainId); return b ? `${b}/address/${a}` : a; };

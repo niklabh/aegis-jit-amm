@@ -1,0 +1,234 @@
+{
+  "network": "worldchainSepolia",
+  "chainId": 4801,
+  "deployedAt": "2026-11-06T11:30:05.245Z",
+  "deployer": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+  "maker": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+  "takers": {
+    "human": "0xb47Fc63033Db7C92964aC2DB3Ec120A8605e8073",
+    "bot": "0xbF0df288Cb85e83158d98dCA7C513FDf3d5Bee84",
+    "whale": "0xd115abbd24D26308af7501f6644eF22357026f3A",
+    "worldHuman": "0x7ae898883b91534923737A792aAC3973CE5028F6"
+  },
+  "contracts": {
+    "aqua": {
+      "address": "0x9eF466A272b7977851c711148623eCaFCeF2B576",
+      "contract": "Aqua",
+      "constructorArgs": [],
+      "txHash": "0x516717bcab6c4baa3b15068d721aa7bba6d8d57e5970986acaf7884b9fc677b0",
+      "blockNumber": 36708532
+    },
+    "usdc": {
+      "address": "0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c",
+      "contract": "TokenCustomDecimalsMock",
+      "constructorArgs": [
+        "USD Coin (AegisJIT mock)",
+        "USDC",
+        0,
+        6
+      ],
+      "txHash": "0x5d36ba5ea4f153f25dc2aca697098b64d2c34cc9f3d4d151d1ad38289a4a1c8c",
+      "blockNumber": 36708534
+    },
+    "weth": {
+      "address": "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+      "contract": "TokenCustomDecimalsMock",
+      "constructorArgs": [
+        "Wrapped Ether (AegisJIT mock)",
+        "WETH",
+        0,
+        18
+      ],
+      "txHash": "0x12f741f3b8138249f323c25f93e449bf00f6e66479933d3ed006172517548f05",
+      "blockNumber": 36708535
+    },
+    "router": {
+      "address": "0xd3b9B73806086AfD0C736EBD36470856E098A917",
+      "contract": "AegisSwapVMRouter",
+      "constructorArgs": [
+        "0x9eF466A272b7977851c711148623eCaFCeF2B576",
+        "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+        "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+        "AegisJIT",
+        "1"
+      ],
+      "txHash": "0xcb4b78890c965ec7003eb572c07f094221fb64b0c28edefe6109a908fc89275a",
+      "blockNumber": 36708536
+    },
+    "hook": {
+      "address": "0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC",
+      "contract": "AegisJITVaultHook",
+      "constructorArgs": [
+        "0xd3b9B73806086AfD0C736EBD36470856E098A917"
+      ],
+      "txHash": "0x5eb4440abca056a9fee96aa71ce587248421d2c00452c75b7639882e332b7d30",
+      "blockNumber": 36708538
+    },
+    "strategy": {
+      "address": "0x10dAae3dFf736978568fBAD6feF24F99C732a11D",
+      "contract": "AegisJITStrategy",
+      "constructorArgs": [],
+      "txHash": "0x9f577935eb2e6720cf7468eb4e4bd91de626d98243a4bdb4db98294b27c65e79",
+      "blockNumber": 36708539
+    },
+    "forwarder": {
+      "address": "0xB39bf2c69106FfAAA60F0Bc35139CB6207FC8FC3",
+      "contract": "AegisZKForwarder",
+      "constructorArgs": [
+        "0xd3b9B73806086AfD0C736EBD36470856E098A917"
+      ],
+      "txHash": "0x328e4fe76437ccab65ad8fa1d92111b4e4b9cc006ebc10b2df6b55ca30ceb419",
+      "blockNumber": 36708540
+    },
+    "usdcVault": {
+      "address": "0xffDe80F6EE5db69807F4E244AD622686354c5eB1",
+      "contract": "MockERC4626Vault",
+      "constructorArgs": [
+        "0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c",
+        "Aegis USDC Vault",
+        "avUSDC"
+      ],
+      "txHash": "0x754c8cc9dd3fac701a8955fce101501129f0a8e67ae6de0e21b47f7f0f6e2d2e",
+      "blockNumber": 36708541
+    },
+    "wethVault": {
+      "address": "0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261",
+      "contract": "MockERC4626Vault",
+      "constructorArgs": [
+        "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+        "Aegis WETH Vault",
+        "avWETH"
+      ],
+      "txHash": "0xd435415405c34638a70da87cdc0cc96245938dfba9710315db2382139ecaf798",
+      "blockNumber": 36708542
+    },
+    "pairingVerifier": {
+      "address": "0xbF1C48baC951E1D5429b27017585A4a920C29CCb",
+      "contract": "contracts/zk/vendor/anon-aadhaar/Verifier.sol:Verifier",
+      "constructorArgs": [],
+      "txHash": "0xce9f477d6dddf554d7177417d03574f6c412ff37062a69d8085f1a38c10f145e",
+      "blockNumber": 36708543
+    },
+    "groth16": {
+      "address": "0x100d5447596FF130Eb4813BA740f315cF9948d3F",
+      "contract": "AnonAadhaarGroth16Verifier",
+      "constructorArgs": [
+        "0xbF1C48baC951E1D5429b27017585A4a920C29CCb",
+        [
+          "179423072149871449489663359223133821359370095615226024492284075770447210161"
+        ]
+      ],
+      "txHash": "0xb11bcb843fbf2f30ac066898fa2357429abf8f3fd0e13bf29cf8423e8cbc8069",
+      "blockNumber": 36708545
+    },
+    "adapter": {
+      "address": "0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc",
+      "contract": "AnonAadhaarAdapter",
+      "constructorArgs": [
+        "0x100d5447596FF130Eb4813BA740f315cF9948d3F",
+        "102813426516833688226979662308789821305009443667011332719223616285398443410",
+        86400,
+        600,
+        2592000,
+        "0"
+      ],
+      "txHash": "0xb84798494dde5ef4baf79d30de880f3491500c816e68786f867e0a384f385657",
+      "blockNumber": 36708546
+    },
+    "worldIdAdapter": {
+      "address": "0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882",
+      "contract": "WorldIDAdapter",
+      "constructorArgs": [
+        "0x57f928158C3EE7CDad1e4D8642503c4D0201f611",
+        "1",
+        "app_2d47490f3897300939bf0fab0426cf79",
+        "aegis-jit-fee-tier",
+        0,
+        600
+      ],
+      "txHash": "0x354bf3fb9449faf29eaab64b36259184f72b94ed20ae6d8592e68c32bdd553cc",
+      "blockNumber": 36708548
+    }
+  },
+  "cfg": {
+    "usdcLiquidity": "1000000000000",
+    "wethLiquidity": "400000000000000000000",
+    "lambdaBps": 2500,
+    "virtualBoostBps": 20000,
+    "exposureWindowSec": 600,
+    "baseFeeBps": 3000000,
+    "maxSurgeFeeBps": 15000000,
+    "impactThresholdBps": "100",
+    "decayWindowSec": 600,
+    "zkMode": 1,
+    "requiredStateCode": 0,
+    "minSellPriceUsdc": 2000,
+    "maxBuyPriceUsdc": 3000,
+    "maxProofAge": 2592000,
+    "epochDuration": 86400,
+    "epochGrace": 600,
+    "worldIdAppId": "app_2d47490f3897300939bf0fab0426cf79",
+    "worldIdAction": "aegis-jit-fee-tier",
+    "worldIdEpochDuration": 0,
+    "worldIdEpochGrace": 600,
+    "rootHistoryExpiry": 3600,
+    "takerUsdc": "2000000000000",
+    "takerWeth": "500000000000000000000",
+    "fundTakerEth": "0.005"
+  },
+  "params": {
+    "maker": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+    "token0": "0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c",
+    "token1": "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+    "vault0": "0xffDe80F6EE5db69807F4E244AD622686354c5eB1",
+    "vault1": "0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261",
+    "jitHook": "0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC",
+    "deadline": "1796556548",
+    "zkVerifierTypes": 3,
+    "worldIdVerifier": "0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882",
+    "aadhaarVerifier": "0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc",
+    "zkMode": 1,
+    "requiredStateCode": 0,
+    "lambdaBps": 2500,
+    "virtualBoostBps": 20000,
+    "exposureWindowSec": 600,
+    "allocation0": "1000000000000",
+    "allocation1": "400000000000000000000",
+    "floor01": {
+      "amountIn": "2000000000",
+      "amountOut": "1000000000000000000"
+    },
+    "floor10": {
+      "amountIn": "1000000000000000000",
+      "amountOut": "3000000000"
+    },
+    "baseFeeBps": 3000000,
+    "maxSurgeFeeBps": 15000000,
+    "impactThresholdBps": "100",
+    "decayWindowSec": 600,
+    "salt": "0"
+  },
+  "order": {
+    "maker": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+    "traits": "0x4cc0000000a000a0006400280000000000000000000000000000000000000000",
+    "data": "0x6c55fd16716a64fc40ae1857b3af7039ddb8de3c8ba8e179bcdc065c497dfa571d35dc7c3bb3653578bcaf9e1f39424b651cc524cb38aeefc493c4ecffde80f6ee5db69807f4e244ad622686354c5eb184b34a6c383da7dd0f1098ce9e2569c6033e026178bcaf9e1f39424b651cc524cb38aeefc493c4ecffde80f6ee5db69807f4e244ad622686354c5eb184b34a6c383da7dd0f1098ce9e2569c6033e02610d05006b1547042a2e030100000000c68e85f4ff30e4e2cfe992f70722406f33e74882309812f2e37e3cf3ed28870ba2307f5e7d566cdc9a56ffde80f6ee5db69807f4e244ad622686354c5eb184b34a6c383da7dd0f1098ce9e2569c6033e0261000009c4000000004e200000000000000000000000e8d4a510000000000000000015af1d78b58c400000000002580b168ba8e179bcdc065c497dfa571d35dc7c3bb3653500bd2b1000000000773594000de0b6b3a76400000a0200cf2b1000000000b2d05e000de0b6b3a76400007a14002dc6c000e4e1c00000000000000064000002581100"
+  },
+  "orderHash": "0x697fbe007a5e999b2581806240cfa67c65497df51372ff8a716de027451f3a81",
+  "ship": {
+    "txHash": "0xcef0bffdb287887fcec44b1e14dc1f1fa79a84f15ec1ad2fad405cec145c838c",
+    "blockNumber": 36708564
+  },
+  "worldId": {
+    "router": "0x57f928158C3EE7CDad1e4D8642503c4D0201f611",
+    "mock": false,
+    "appId": "app_2d47490f3897300939bf0fab0426cf79",
+    "action": "aegis-jit-fee-tier"
+  },
+  "notes": [
+    "USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).",
+    "MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.",
+    "World ID: the chain's World ID Router (0x57f928158C3EE7CDad1e4D8642503c4D0201f611); proofs come from World App / the World ID Simulator via IDKit for app app_2d47490f3897300939bf0fab0426cf79, action aegis-jit-fee-tier.",
+    "ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.",
+    "Order deadline: 30 days after deployment."
+  ]
+}
