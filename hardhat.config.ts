@@ -12,14 +12,30 @@ import { HardhatUserConfig } from 'hardhat/config';
 
 dotenv.config();
 
+/**
+ * Deployer key for public networks, from PRIVATE_KEY in .env (git-ignored). Accepted with or without
+ * the 0x prefix. Anything that is not a 64-hex-char key (empty, the .env.example placeholder, ...) is
+ * ignored instead of breaking every Hardhat command with HH8, so local work never depends on it.
+ */
+function deployerAccounts(): string[] {
+  const raw = (process.env.PRIVATE_KEY ?? "").trim().replace(/^0x/i, "");
+  if (raw === "") return [];
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    console.warn("hardhat.config: PRIVATE_KEY is not a 64-hex-character key; ignoring it (public-network deploys disabled)");
+    return [];
+  }
+  return ["0x" + raw];
+}
+
 const config: HardhatUserConfig = {
   networks: {
     localhost: {
       url: "http://127.0.0.1:8545",
     },
     sepolia: {
-      url: process.env.SEPOLIA_RPC_URL || "",
-      accounts: process.env.PRIVATE_KEY ? ["0x" + process.env.PRIVATE_KEY] : [],
+      // SEPOLIA_RPC_URL falls back to a public endpoint; the deployer key comes from PRIVATE_KEY (see below)
+      url: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
+      accounts: deployerAccounts(),
     },
     // Add your deployment network here and the corresponding URL in the .env file
   },
