@@ -38,7 +38,8 @@ export interface DeploymentRecord {
 
 export const recordPath = (networkName: string = network.name) => path.join(__dirname, "..", "..", "deployments", networkName, "aegis.json");
 
-const toJson = (v: unknown) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2);
+/** JSON with bigints as decimal strings (the dashboard and the record readers re-wrap them with BigInt()) */
+export const toJson = (v: unknown) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2);
 
 export function saveRecord(rec: DeploymentRecord) {
   const file = recordPath(rec.network);

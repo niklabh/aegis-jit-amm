@@ -5,7 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { deployAegis, MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH, WORLD_ID_MEMBERS, worldIdArtifactsAvailable } from "../test/utils/aegisFixture";
-import { aboutSection } from "./lib/deployment";
+import { aboutSection, toJson } from "./lib/deployment";
 
 const hre = require("hardhat");
 const { ethers } = hre;
@@ -97,7 +97,7 @@ async function main() {
 
   const file = path.join(__dirname, "..", "ui", "public", "deployment.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(out, null, 2));
+  fs.writeFileSync(file, toJson(out));
   console.log(`AegisJIT seeded on chain ${out.chainId}. Router ${env.addr.router}`);
   console.log(`Wrote ${path.relative(process.cwd(), file)}`);
 }

@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH, WORLD_ID_MEMBERS, encodeRealProofTakerArgs, generateRealProof } from "../test/utils/aegisFixture";
 import { TakerTraitsLib } from "../test/utils/SwapVMHelpers";
-import { explorerBase, loadRecord, takerWallets, aboutSection } from "./lib/deployment";
+import { explorerBase, loadRecord, takerWallets, aboutSection, toJson } from "./lib/deployment";
 
 const hre = require("hardhat");
 const { ethers, network } = hre;
@@ -88,7 +88,7 @@ async function main() {
   };
   const file = path.join(__dirname, "..", "ui", "public", "deployment.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(out, null, 2));
+  fs.writeFileSync(file, toJson(out));
   console.log(`wrote ${path.relative(process.cwd(), file)} for ${network.name} (chainId ${rec.chainId}, ${out.readOnly ? "read-only" : "local"}); World ID backend: ${out.worldId.backend}`);
 }
 
