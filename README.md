@@ -1,5 +1,7 @@
 # AegisJIT — Custom-Opcode AMM & Self-Custodial JIT Liquidity Vault
 
+<p align="center"><img src="assets/aegisjit-wordmark.svg" width="720" alt="AegisJIT — custom SwapVM opcodes on 1inch Aqua"></p>
+
 Built on **1inch Aqua** and **1inch SwapVM** for ETHGlobal Mumbai 2026.
 
 AegisJIT lets a Maker keep 100% of their capital in ERC-4626 yield vaults, in their own wallet,

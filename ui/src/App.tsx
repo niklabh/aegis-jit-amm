@@ -82,9 +82,12 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
   return (
     <Shell>
       <header className="border-b border-slate-800 px-6 py-4 flex flex-wrap items-center gap-4 justify-between">
-        <div>
+        <div className="flex items-center gap-3">
+          <img src="/favicon.svg" alt="" width={40} height={40} className="rounded-lg" />
+          <div>
           <h1 className="text-xl font-semibold tracking-tight text-white">AegisJIT <span className="text-slate-500 font-normal">· SwapVM Inspector</span></h1>
           <p className="text-xs text-slate-500">Custom-opcode AMM & self-custodial JIT vault on 1inch Aqua + SwapVM · Powered by SwapVM — © Degensoft Ltd 2025</p>
+          </div>
         </div>
         <div className="flex items-center gap-3 text-xs">
           <span className={`px-2 py-1 rounded border ${rpcErr ? "border-rose-600 text-rose-300" : "border-emerald-700 text-emerald-300"}`}>
