@@ -472,6 +472,7 @@ World App / IDKit (production)        local tree + prover (tests, demo, dashboar
 WorldIDAdapter → IWorldID.verifyProof(root, 1, hashToField(beneficiary), nullifierHash, externalNullifierFor(epoch), proof)   (STATICCALL)
       (action rotation optional: actionFor(epoch) = "<action>-<epoch>"; IDKit is asked for that action)
       ▼ production: World ID Router (World Chain / Ethereum / Optimism …)
+                    live: World Chain Sepolia 0x57f928158C3EE7CDad1e4D8642503c4D0201f611, staging app, IDKit legacy Orb proofs
       ▼ local:      MockWorldIDRouter (group 1, root history, 1 h expiry) → SemaphoreVerifier (vendored, real pairing)
 ```
 
@@ -509,6 +510,16 @@ page then runs `WorldIDAdapter.verifyProof` by `eth_call`, builds the takerTrait
 header) and attaches it to the Verified Human profile. `fromIdKitResult` maps an IDKit / World App
 result (`merkle_root`, `nullifier` or `nullifier_hash`, abi-encoded `proof`) to the same payload.
 
+IDKit 4.x in the dashboard: `IDKitRequestWidget` with `preset = orbLegacy({ signal: taker })`,
+`allow_legacy_proofs` (the router's 6-argument `verifyProof` checks World ID 3.0 Orb proofs) and
+`environment = staging | production`. Every request carries an `rp_context` signed with the app's
+relying-party key; that signature is produced by the local prover process
+(`POST /worldid/rp-context`, `@worldcoin/idkit-core/signing`) so the key never reaches the browser.
+`handleVerify` runs `WorldIDAdapter.verifyProof` through the deployment's router by `eth_call`
+before the widget reports success. Against a public deployment (`scripts/ui-deployment.ts`) the
+dashboard is read-only: quotes, buckets and proofs work, `swap()` and the `evm_snapshot` sandbox
+are disabled and the IDKit result is downloaded for `IDKIT_RESULT=… scripts/demo-sepolia.ts`.
+
 ## 8. Milestones
 
 1. Spec (this file)
@@ -522,3 +533,5 @@ result (`merkle_root`, `nullifier` or `nullifier_hash`, abi-encoded `proof`) to 
 15. World ID backend: `packages/world-id` prover (real Semaphore proofs), vendored verifier, Foundry fuzz, demo scenarios 1A/1B
 16. Dashboard: dual-tab ZK Pass (World ID proofs generated in the browser with snarkjs / ZK Aadhaar via the local prover), typed takerData header builder, disassembler PASSED status per proof type, IDKit result import, headless smoke for both tabs
 17. Hardening after the adversarial review (§7d): maxWithdraw sizing + hook fallback, token-bucket surge window, per-window λ budget, binding claims, epoch grace, World ID action rotation, taker authorisation, UIDAI key set
+18. Ethereum Sepolia: resumable deployment (`scripts/deploy-sepolia.ts`), Etherscan verification, public-chain demo runner with real proofs, README renderer; 15 verified contracts, 10 live scenarios
+19. World Chain Sepolia: deployment against the chain's World ID Router (staging app from the Developer Portal), Worldscan verification, IDKit 4.x request signing in the prover, `IDKitRequestWidget` in the dashboard, read-only public dashboard config + `smoke:public`, `IDKIT_RESULT` demo scenario

@@ -269,7 +269,9 @@ the surge; a proof made 10 s before the epoch roll dying) are now regression tes
 - Production wiring: deploy `WorldIDAdapter(worldIdRouter, 1, "app_…", "aegis-jit-fee-tier", epochDuration, epochGrace)`
   with the World ID Router address of the target chain, ask IDKit for `action = actionFor(currentEpoch())`
   with `signal = <taker address>`, and pass the result's `merkle_root`, `nullifier_hash`, the epoch
-  and `proof` into `encodeWorldIdProofEnvelope` / `encodeWorldIdTakerArgs`.
+  and `proof` into `encodeWorldIdProofEnvelope` / `encodeWorldIdTakerArgs`. This is live on World
+  Chain Sepolia against the chain's World ID Router with IDKit in the dashboard (see *Live on
+  World Chain Sepolia*).
 
 ### Anon Aadhaar + zkAadhaar (identity)
 - **zkAadhaar** (`packages/zk-aadhaar`, MIT) handles the Secure QR offline:
@@ -395,9 +397,12 @@ the UI.
     membership proof generated **in the browser** (snarkjs over the public depth-30 artifacts,
     served from `/semaphore/30`), checked with an `eth_call` through
     `WorldIDAdapter → MockWorldIDRouter → SemaphoreVerifier` (World ID's own), then attached as
-    a type-1 payload. The witness never leaves the tab. A "Production: World App via IDKit"
-    box encodes a pasted IDKit result (`merkle_root`, `nullifier`, `proof`) into the same payload
-    and reports, honestly, that a real World ID root is not known to the local router.
+    a type-1 payload. The witness never leaves the tab. **Verify with World App / Simulator**
+    opens IDKit's request widget for the registered app (legacy Orb proof, signal = the taker,
+    request signed by the local prover's RP endpoint), checks the returned proof through the
+    deployment's router by `eth_call` and attaches it; on the local chain that honestly reports
+    that a real World ID root is not known to the mock router, on World Chain Sepolia it passes
+    (see *Live on World Chain Sepolia*). A paste box takes an IDKit result JSON as well.
   - **🇮🇳 ZK Aadhaar (India Sovereign)** — the Secure QR scanner, in-browser RSA-2048 check and
     Anon Aadhaar Groth16 proof via the local prover, attached as a type-2 payload.
 - **Bytecode disassembler.** The order is decoded live from Aqua's `Shipped` event, not from
@@ -415,6 +420,9 @@ the UI.
   `JITExposureCapExceeded`.
 - **Vault panel.** Shows the λ-exposed slice vs the untouched, yield-earning reserve, and
   whether the Aqua book equals the vault backing.
+- `cd ui && npm run smoke:public` runs the read-only checks against a public deployment
+  (`scripts/ui-deployment.ts`): live order, quotes per tier, fee mirror, 0x9A cap, the
+  read-only guards and the adapter's wiring to the chain's World ID Router.
 - `cd ui && npm run smoke` checks the same client library headlessly against a seeded node,
   for both tabs: it rebuilds the World ID tree, generates a Semaphore proof with the dashboard's
   own code path, verifies it on-chain, rebuilds the takerTraits header, compares the World ID
@@ -550,6 +558,109 @@ Judges can also call the deployment directly: `router.asView().quote(order, amou
 with the `order` from `aegis.json` and `takerData` built by `src/aegisProgramBuilder.ts`, or read the
 live buckets with `router.surgeWindow(orderHash, usdc)` and `router.exposureWindow(orderHash, weth)`.
 
+## Live on World Chain Sepolia (real World ID Router)
+
+The same stack is deployed on World Chain Sepolia (chainId 4801) with one difference: there is no
+`MockWorldIDRouter`. `WorldIDAdapter` points at the chain's World ID Router,
+[`0x57f928158C3EE7CDad1e4D8642503c4D0201f611`](https://sepolia.worldscan.org/address/0x57f928158C3EE7CDad1e4D8642503c4D0201f611),
+for the staging app `app_2d47490f3897300939bf0fab0426cf79` registered in the World Developer Portal
+and the action `aegis-jit-fee-tier`. Proofs come from World App, or from the World ID Simulator for
+this staging app, through IDKit; the project's local identity tree cannot prove into this deployment.
+All 13 contracts are source-verified on Worldscan. Records: [`deployments/worldchainSepolia/`](deployments/worldchainSepolia/).
+
+<!-- worldchainSepolia:deployment -->
+Deployed 2026-11-06 on worldchainSepolia (chainId 4801) by [`0x467071F2ee89347354ee91105d8dbA129D1c8eE6`](https://sepolia.worldscan.org/address/0x467071F2ee89347354ee91105d8dbA129D1c8eE6), who is also the Maker.
+
+| Contract | Address | Deploy tx |
+|---|---|---|
+| Aqua (1inch shared liquidity layer) | [`0x9eF466A272b7977851c711148623eCaFCeF2B576`](https://sepolia.worldscan.org/address/0x9eF466A272b7977851c711148623eCaFCeF2B576) | [`0x516717bc…c677b0`](https://sepolia.worldscan.org/tx/0x516717bcab6c4baa3b15068d721aa7bba6d8d57e5970986acaf7884b9fc677b0) |
+| USDC mock (6 dp, mintable) | [`0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c`](https://sepolia.worldscan.org/address/0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c) | [`0x5d36ba5e…4a1c8c`](https://sepolia.worldscan.org/tx/0x5d36ba5ea4f153f25dc2aca697098b64d2c34cc9f3d4d151d1ad38289a4a1c8c) |
+| WETH mock (18 dp, mintable) | [`0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535`](https://sepolia.worldscan.org/address/0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535) | [`0x12f741f3…548f05`](https://sepolia.worldscan.org/tx/0x12f741f3b8138249f323c25f93e449bf00f6e66479933d3ed006172517548f05) |
+| AegisSwapVMRouter (SwapVM + 0x2A / 0x9A / 0x7A) | [`0xd3b9B73806086AfD0C736EBD36470856E098A917`](https://sepolia.worldscan.org/address/0xd3b9B73806086AfD0C736EBD36470856E098A917) | [`0xcb4b7889…89275a`](https://sepolia.worldscan.org/tx/0xcb4b78890c965ec7003eb572c07f094221fb64b0c28edefe6109a908fc89275a) |
+| AegisJITVaultHook (JIT withdraw / re-deposit) | [`0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC`](https://sepolia.worldscan.org/address/0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC) | [`0x5eb4440a…2b7d30`](https://sepolia.worldscan.org/tx/0x5eb4440abca056a9fee96aa71ce587248421d2c00452c75b7639882e332b7d30) |
+| AegisJITStrategy (on-chain order builder) | [`0x10dAae3dFf736978568fBAD6feF24F99C732a11D`](https://sepolia.worldscan.org/address/0x10dAae3dFf736978568fBAD6feF24F99C732a11D) | [`0x9f577935…c65e79`](https://sepolia.worldscan.org/tx/0x9f577935eb2e6720cf7468eb4e4bd91de626d98243a4bdb4db98294b27c65e79) |
+| AegisZKForwarder (reference aggregator) | [`0xB39bf2c69106FfAAA60F0Bc35139CB6207FC8FC3`](https://sepolia.worldscan.org/address/0xB39bf2c69106FfAAA60F0Bc35139CB6207FC8FC3) | [`0x328e4fe7…ceb419`](https://sepolia.worldscan.org/tx/0x328e4fe76437ccab65ad8fa1d92111b4e4b9cc006ebc10b2df6b55ca30ceb419) |
+| avUSDC MockERC4626Vault | [`0xffDe80F6EE5db69807F4E244AD622686354c5eB1`](https://sepolia.worldscan.org/address/0xffDe80F6EE5db69807F4E244AD622686354c5eB1) | [`0x754c8cc9…6e2d2e`](https://sepolia.worldscan.org/tx/0x754c8cc9dd3fac701a8955fce101501129f0a8e67ae6de0e21b47f7f0f6e2d2e) |
+| avWETH MockERC4626Vault | [`0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261`](https://sepolia.worldscan.org/address/0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261) | [`0xd4354154…caf798`](https://sepolia.worldscan.org/tx/0xd435415405c34638a70da87cdc0cc96245938dfba9710315db2382139ecaf798) |
+| Anon Aadhaar v2 Groth16 verifier (vendored snarkjs, ecPairing) | [`0xbF1C48baC951E1D5429b27017585A4a920C29CCb`](https://sepolia.worldscan.org/address/0xbF1C48baC951E1D5429b27017585A4a920C29CCb) | [`0xce9f477d…0f145e`](https://sepolia.worldscan.org/tx/0xce9f477d6dddf554d7177417d03574f6c412ff37062a69d8085f1a38c10f145e) |
+| AnonAadhaarGroth16Verifier (UIDAI key set; test signer here) | [`0x100d5447596FF130Eb4813BA740f315cF9948d3F`](https://sepolia.worldscan.org/address/0x100d5447596FF130Eb4813BA740f315cF9948d3F) | [`0xb11bcb84…bc8069`](https://sepolia.worldscan.org/tx/0xb11bcb843fbf2f30ac066898fa2357429abf8f3fd0e13bf29cf8423e8cbc8069) |
+| AnonAadhaarAdapter (0x2A type 2) | [`0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc`](https://sepolia.worldscan.org/address/0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc) | [`0xb8479849…385657`](https://sepolia.worldscan.org/tx/0xb84798494dde5ef4baf79d30de880f3491500c816e68786f867e0a384f385657) |
+| WorldIDAdapter (0x2A type 1) | [`0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882`](https://sepolia.worldscan.org/address/0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882) | [`0x354bf3fb…d553cc`](https://sepolia.worldscan.org/tx/0x354bf3fb9449faf29eaab64b36259184f72b94ed20ae6d8592e68c32bdd553cc) |
+
+| Strategy | |
+|---|---|
+| orderHash | `0x697fbe007a5e999b2581806240cfa67c65497df51372ff8a716de027451f3a81` |
+| Aqua.ship tx | [`0xcef0bffd…5c838c`](https://sepolia.worldscan.org/tx/0xcef0bffdb287887fcec44b1e14dc1f1fa79a84f15ec1ad2fad405cec145c838c) (block 36708564) |
+| Maker capital | 1,000,000 USDC + 400 WETH in the two vaults; Aqua book = the same, as virtual balances |
+| λ / boost / windows | 25% per execution and per 600s window / 2x / 600s fee bucket |
+| fees | base 0.3% (humans 0.15%), surge marginal 1.5% above 1% utilisation |
+| Aadhaar epochs | 24 h, grace 600 s, QR freshness 30 days |
+
+Taker accounts used by the live run:
+
+| Role | Address |
+|---|---|
+| human | [`0xb47Fc63033Db7C92964aC2DB3Ec120A8605e8073`](https://sepolia.worldscan.org/address/0xb47Fc63033Db7C92964aC2DB3Ec120A8605e8073) |
+| bot | [`0xbF0df288Cb85e83158d98dCA7C513FDf3d5Bee84`](https://sepolia.worldscan.org/address/0xbF0df288Cb85e83158d98dCA7C513FDf3d5Bee84) |
+| whale | [`0xd115abbd24D26308af7501f6644eF22357026f3A`](https://sepolia.worldscan.org/address/0xd115abbd24D26308af7501f6644eF22357026f3A) |
+| worldHuman | [`0x7ae898883b91534923737A792aAC3973CE5028F6`](https://sepolia.worldscan.org/address/0x7ae898883b91534923737A792aAC3973CE5028F6) |
+
+- USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).
+- MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.
+- World ID: the chain's World ID Router (0x57f928158C3EE7CDad1e4D8642503c4D0201f611); proofs come from World App / the World ID Simulator via IDKit for app app_2d47490f3897300939bf0fab0426cf79, action aegis-jit-fee-tier.
+- ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.
+- Order deadline: 30 days after deployment.
+<!-- /worldchainSepolia:deployment -->
+
+Deployment and verification cost about 0.02 ETH. Scenarios 0–4 and 6–9 of `scripts/demo-sepolia.ts`
+run here unchanged (the Aadhaar pass and the binding claim do not depend on the chain); scenario 5
+needs a World ID proof and is skipped until one is supplied with `IDKIT_RESULT` (below).
+
+**World ID through IDKit.** IDKit 4.x signs every request with the app's relying-party key, so the
+flow has a server side even for a demo:
+
+1. Developer Portal → the app → relying-party registration gives an `rp_id` and a signing key.
+   `.env`: `WORLD_ID_STAGING_APP_ID`, `WORLD_ID_RP_ID`, `WORLD_ID_RP_SIGNING_KEY`. The key is read
+   only by the local prover process (`packages/zk-aadhaar/prover/server.ts`), whose
+   `POST /worldid/rp-context` signs one request at a time with `@worldcoin/idkit-core/signing`;
+   the browser receives `{ rp_id, nonce, created_at, expires_at, signature }`, never the key.
+   `GET /health` reports whether the RP is configured.
+2. `npx hardhat run --network worldchainSepolia scripts/ui-deployment.ts` writes
+   `ui/public/deployment.json` for the public deployment and `npm --prefix ui run dev` serves the
+   dashboard in **read-only mode**: live quotes, buckets, the disassembled order from Worldscan's
+   chain, both ZK passes; `swap()` and the split sandbox are disabled (no signer in the browser,
+   no `evm_snapshot` on a public node) and point at the CLI. `npm --prefix ui run smoke:public`
+   checks that path headlessly, including that the adapter is wired to the real router.
+3. 🌍 World ID tab → **Verify with World App / Simulator**. `IDKitRequestWidget` opens with
+   `preset = orbLegacy({ signal: <Verified Human taker> })`, `allow_legacy_proofs` and
+   `environment = staging`; World App or the Simulator (`https://simulator.worldcoin.org`) scans the
+   QR and returns a legacy (World ID 3.0) Orb proof `{ merkle_root, nullifier, proof }`, the format
+   the router's 6-argument `verifyProof` checks on-chain. `handleVerify` runs
+   `WorldIDAdapter.verifyProof` through the real router by `eth_call` before the widget reports
+   success; the proof is then attached to the Verified Human profile, the quote drops to the human
+   tier, and **Download IDKit result** saves the JSON.
+4. `IDKIT_RESULT=idkit-result.json DEMO_SCENARIOS=5 npx hardhat run --network worldchainSepolia scripts/demo-sepolia.ts`
+   executes the swap with that proof. The scenario runs as the taker the proof's `signal_hash`
+   names (the dashboard signs for the Verified Human account), because the adapter binds the
+   signal to the taker address and rejects the proof from any other account.
+
+Nothing else changes between the chains: signal binding, the Sybil policy, the nullifier binding
+with the 33-byte claim, the envelopes and the fee tier are the same code the Sepolia and local runs
+exercise with the mock router.
+
+Reproduce:
+
+```bash
+# .env additionally: WORLD_ID_STAGING_APP_ID (Developer Portal), WORLD_ID_RP_ID + WORLD_ID_RP_SIGNING_KEY (IDKit request signing),
+#                    WORLDCHAIN_SEPOLIA_RPC_URL (optional; public endpoint by default)
+WORLD_ID_ROUTER=0x57f928158C3EE7CDad1e4D8642503c4D0201f611 \
+  npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts   # no mock router: the adapter gets the chain's World ID Router
+npx hardhat run --network worldchainSepolia scripts/verify-sepolia.ts      # Worldscan (Etherscan API V2, chainid 4801)
+npx hardhat run --network worldchainSepolia scripts/ui-deployment.ts       # read-only dashboard config
+npm --prefix packages/zk-aadhaar run prover:serve                          # Aadhaar prover + World ID request signing
+npm --prefix ui run dev                                                    # http://127.0.0.1:5173
+```
+
 ## Project structure
 
 ```
@@ -620,9 +731,11 @@ them the base fee and price impact every window); linkage through the Anon Aadha
 - Proving runs in a local Node process, not inside the browser.
 - Each epoch needs one fresh proof (later trades use the claim). QRs older than `MAX_PROOF_AGE`
   (30 days by default) are rejected.
-- World ID locally means a local identity tree: the project is its own signup sequencer, and
-  `MockWorldIDRouter` publishes its roots. On a live network the adapter points at the World ID
-  Router and takers prove with World App / IDKit; nothing in the adapter or the opcode changes.
+- World ID locally (and on Ethereum Sepolia) means a local identity tree: the project is its own
+  signup sequencer, and `MockWorldIDRouter` publishes its roots. On World Chain Sepolia the adapter
+  points at the chain's World ID Router and takers prove with World App / the Simulator through
+  IDKit; nothing in the adapter or the opcode changes. IDKit 4.x needs the app's relying-party
+  signing key on a server, here the local prover process.
 - The demo deploys the World ID adapter with action rotation off, so IDKit's static action
   matches; with rotation on, IDKit must be asked for `actionFor(currentEpoch())`.
 - Not audited.
