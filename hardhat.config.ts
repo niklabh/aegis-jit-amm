@@ -93,12 +93,8 @@ const config: HardhatUserConfig = {
     outDir: "typechain-types",
   },
   etherscan: {
-    apiKey: {
-      // Add your Etherscan API keys here
-      mainnet: process.env.ETHERSCAN_API_KEY || "",
-      sepolia: process.env.ETHERSCAN_API_KEY || "",
-      // Add other networks as needed
-    }
+    // A single key selects Etherscan's API V2 (one key for every chain); the per-network map used the retired V1 endpoints
+    apiKey: process.env.ETHERSCAN_API_KEY || "",
   }
 };
 

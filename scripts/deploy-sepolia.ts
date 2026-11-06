@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Deploys the complete AegisJIT demo stack on a public network (Sepolia) and ships the Maker's strategy.
 //   npx hardhat run --network sepolia scripts/deploy-sepolia.ts
+//   ORDER_SALT=1 npx hardhat run --network sepolia scripts/deploy-sepolia.ts   # reuse the contracts, ship a fresh order
 //
 // Resumable and idempotent: every deployed contract is checkpointed to deployments/<network>/aegis.partial.json
 // and every setup step checks on-chain state before sending (balances, allowances, vault positions, Aqua
@@ -57,7 +58,8 @@ const CFG = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isConnectionError = (e: any) => /timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket|network error|fetch failed|other side closed|503|502|429/i.test(String(e?.message ?? e));
 
-interface Partial { network: string; chainId: number; contracts: Record<string, ContractRecord>; params?: any; order?: any }
+interface Partial { network: string; chainId: number; contracts: Record<string, ContractRecord>; params?: any; order?: any; ship?: any }
+const ORDER_SALT = BigInt(process.env.ORDER_SALT ?? "0");
 const partialPath = () => path.join(__dirname, "..", "deployments", network.name, "aegis.partial.json");
 const toJson = (v: unknown) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2);
 
@@ -71,10 +73,21 @@ async function main() {
 
   // ---------------- checkpoint
   let partial: Partial = { network: network.name, chainId, contracts: {} };
+  let previousOrders: Array<{ orderHash: string; salt: string; shipTx: string }> = [];
+  const finalPath = path.join(__dirname, "..", "deployments", network.name, "aegis.json");
   if (fs.existsSync(partialPath())) {
     partial = JSON.parse(fs.readFileSync(partialPath(), "utf8"));
     if (partial.chainId !== chainId) throw new Error(`partial record is for chainId ${partial.chainId}, connected to ${chainId}`);
     console.log(`${C.yellow}resuming: ${Object.keys(partial.contracts).length} contracts already deployed (${partialPath()})${C.reset}`);
+  } else if (fs.existsSync(finalPath)) {
+    // a finished deployment: reuse every contract; a new ORDER_SALT ships a fresh order (fresh fee / budget buckets)
+    const prev: DeploymentRecord = JSON.parse(fs.readFileSync(finalPath, "utf8"));
+    if (prev.chainId !== chainId) throw new Error(`deployment record is for chainId ${prev.chainId}, connected to ${chainId}`);
+    partial.contracts = prev.contracts;
+    previousOrders = [...((prev as any).previousOrders ?? [])];
+    if (BigInt((prev.params as any).salt ?? 0) === ORDER_SALT) partial.params = prev.params;
+    else previousOrders.push({ orderHash: prev.orderHash, salt: String((prev.params as any).salt ?? 0), shipTx: prev.ship.txHash });
+    console.log(`${C.yellow}reusing the finished deployment in ${finalPath} (${Object.keys(partial.contracts).length} contracts); order salt ${ORDER_SALT}${C.reset}`);
   }
   const checkpoint = () => { fs.mkdirSync(path.dirname(partialPath()), { recursive: true }); fs.writeFileSync(partialPath(), toJson(partial) + "\n"); };
 
@@ -105,7 +118,7 @@ async function main() {
       return (await ethers.getContractAt(name, existing.address)) as T; // fully qualified names are fine here
     }
     const factory = await ethers.getContractFactory(name);
-    const c = await withRetry(`deploy ${key}`, () => factory.deploy(...args));
+    const c: any = await withRetry(`deploy ${key}`, () => factory.deploy(...args));
     const rc = await waitReceipt(c.deploymentTransaction()!.hash);
     const address = await c.getAddress();
     partial.contracts[key] = { address, contract: name, constructorArgs: args, txHash: rc!.hash, blockNumber: rc!.blockNumber };
@@ -225,7 +238,7 @@ async function main() {
       floor10: { amountIn: WETH(1), amountOut: USDC(CFG.maxBuyPriceUsdc) },
       baseFeeBps: CFG.baseFeeBps, maxSurgeFeeBps: CFG.maxSurgeFeeBps,
       impactThresholdBps: CFG.impactThresholdBps, decayWindowSec: CFG.decayWindowSec,
-      salt: 0n,
+      salt: ORDER_SALT,
     };
     partial.params = params; checkpoint();
   }
@@ -263,6 +276,7 @@ async function main() {
     params: params as any,
     order, orderHash,
     ship: { txHash: shipRc.hash, blockNumber: shipRc.blockNumber },
+    ...(previousOrders.length ? { previousOrders } : {}),
     notes: [
       "USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).",
       "MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.",
