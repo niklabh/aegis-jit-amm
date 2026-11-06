@@ -2,7 +2,11 @@
 // Deploys the complete AegisJIT demo stack on a public network (Sepolia) and ships the Maker's strategy.
 //   npx hardhat run --network sepolia scripts/deploy-sepolia.ts
 //
+// Resumable and idempotent: every deployed contract is checkpointed to deployments/<network>/aegis.partial.json
+// and every setup step checks on-chain state before sending (balances, allowances, vault positions, Aqua
+// book), so re-running after an RPC hiccup continues where it stopped instead of redeploying.
 // Everything a judge needs to replay the demo is written to deployments/<network>/aegis.json.
+//
 // Mocks, on purpose (this is the hackathon demo, not production):
 //   * USDC / WETH   mintable ERC-20 mocks (6 / 18 decimals) — Sepolia has no 400 ETH to wrap and no 1M USDC faucet
 //   * vaults        MockERC4626Vault (OpenZeppelin ERC-4626) as the Maker's yield vaults
@@ -10,6 +14,8 @@
 //                   SemaphoreVerifier; the identity tree is the project's local tree (packages/world-id)
 //   * Aadhaar       the REAL Anon Aadhaar v2 Groth16 verifier, trust root = the public AegisJIT TEST signer
 // Aqua, the router, the opcodes, the adapters and the hook are the real contracts.
+import * as fs from "fs";
+import * as path from "path";
 import { AegisProgramBuilder, AegisStrategyParams, ZKMode, ZKVerifierType } from "../src/aegisProgramBuilder";
 import {
   AEGIS_NULLIFIER_SEED, TEST_SIGNER_PUBKEY_HASH, USDC, WETH, WORLD_ID_GROUP, WORLD_ID_INITIAL_ROOT,
@@ -48,6 +54,13 @@ const CFG = {
   fundTakerEth: process.env.FUND_TAKER_ETH ?? "0.25",
 };
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isConnectionError = (e: any) => /timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket|network error|fetch failed|other side closed|503|502|429/i.test(String(e?.message ?? e));
+
+interface Partial { network: string; chainId: number; contracts: Record<string, ContractRecord>; params?: any; order?: any }
+const partialPath = () => path.join(__dirname, "..", "deployments", network.name, "aegis.partial.json");
+const toJson = (v: unknown) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2);
+
 async function main() {
   const [deployer] = await ethers.getSigners();
   if (!deployer) throw new Error(`no deployer for network "${network.name}": set PRIVATE_KEY in .env`);
@@ -56,21 +69,66 @@ async function main() {
   banner(`AegisJIT · deploy to ${network.name} (chainId ${chainId})`);
   console.log(`deployer / Maker ${deployerAddr}  balance ${ethers.formatEther(await ethers.provider.getBalance(deployerAddr))} ETH`);
 
-  const contracts: Record<string, ContractRecord> = {};
+  // ---------------- checkpoint
+  let partial: Partial = { network: network.name, chainId, contracts: {} };
+  if (fs.existsSync(partialPath())) {
+    partial = JSON.parse(fs.readFileSync(partialPath(), "utf8"));
+    if (partial.chainId !== chainId) throw new Error(`partial record is for chainId ${partial.chainId}, connected to ${chainId}`);
+    console.log(`${C.yellow}resuming: ${Object.keys(partial.contracts).length} contracts already deployed (${partialPath()})${C.reset}`);
+  }
+  const checkpoint = () => { fs.mkdirSync(path.dirname(partialPath()), { recursive: true }); fs.writeFileSync(partialPath(), toJson(partial) + "\n"); };
+
+  /** Retries a provider-level call that failed before anything was broadcast */
+  const withRetry = async <T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> => {
+    for (let i = 1; ; i++) {
+      try { return await fn(); } catch (e: any) {
+        if (i >= attempts || !isConnectionError(e)) throw e;
+        console.log(`  ${C.yellow}· ${label}: ${String(e.message ?? e).split("\n")[0].slice(0, 80)} — retry ${i}/${attempts - 1} in 15 s${C.reset}`);
+        await sleep(15_000);
+      }
+    }
+  };
+  /** Waits for a receipt by hash, surviving RPC stalls */
+  const waitReceipt = async (hash: string) => {
+    for (let i = 0; i < 60; i++) {
+      try { const rc = await ethers.provider.getTransactionReceipt(hash); if (rc) return rc; } catch (e) { if (!isConnectionError(e)) throw e; }
+      await sleep(5_000);
+    }
+    throw new Error(`no receipt for ${hash} after 5 minutes`);
+  };
+
   const deploy = async <T>(key: string, name: string, args: unknown[] = []): Promise<T> => {
+    const existing = partial.contracts[key];
+    if (existing) {
+      existing.constructorArgs = args; // keep the record's args exact (placeholders from a reconstructed checkpoint)
+      console.log(`  ${C.dim}↺ ${key.padEnd(18)} ${existing.address}  (already deployed, reused)${C.reset}`);
+      return (await ethers.getContractAt(name, existing.address)) as T; // fully qualified names are fine here
+    }
     const factory = await ethers.getContractFactory(name);
-    const c = await factory.deploy(...args);
-    const rc = await c.deploymentTransaction()!.wait();
+    const c = await withRetry(`deploy ${key}`, () => factory.deploy(...args));
+    const rc = await waitReceipt(c.deploymentTransaction()!.hash);
     const address = await c.getAddress();
-    contracts[key] = { address, contract: name, constructorArgs: args, txHash: rc!.hash, blockNumber: rc!.blockNumber };
+    partial.contracts[key] = { address, contract: name, constructorArgs: args, txHash: rc!.hash, blockNumber: rc!.blockNumber };
+    checkpoint();
     console.log(`  ${C.green}✔${C.reset} ${key.padEnd(18)} ${address}  ${C.dim}gas ${rc!.gasUsed}${C.reset}`);
     return c as T;
   };
-  const send = async (label: string, p: Promise<any>) => {
-    const tx = await p;
-    const rc = await tx.wait();
-    console.log(`  ${C.dim}· ${label.padEnd(44)} ${short(rc.hash)}  gas ${rc.gasUsed}${C.reset}`);
+  const send = async (label: string, fn: () => Promise<any>) => {
+    const tx = await withRetry(label, fn);
+    const rc = await waitReceipt(tx.hash);
+    console.log(`  ${C.dim}· ${label.padEnd(50)} ${short(rc.hash)}  gas ${rc.gasUsed}${C.reset}`);
     return rc;
+  };
+  const skip = (label: string) => console.log(`  ${C.dim}= ${label.padEnd(50)} already done${C.reset}`);
+  const MAX_HALF = ethers.MaxUint256 / 2n;
+  const ensureAllowance = async (token: any, owner: any, ownerAddr: string, spender: string, label: string) => {
+    if ((await token.allowance(ownerAddr, spender)) >= MAX_HALF) return skip(label);
+    await send(label, () => token.connect(owner).approve(spender, ethers.MaxUint256));
+  };
+  const ensureBalance = async (token: any, holder: string, target: bigint, label: string) => {
+    const bal: bigint = await token.balanceOf(holder);
+    if (bal >= target) return skip(label);
+    await send(label, () => token.mint(holder, target - bal));
   };
 
   // ---------------- takers
@@ -80,7 +138,8 @@ async function main() {
   for (const role of TAKER_ROLES) {
     const a = takers[role].address;
     const bal: bigint = await ethers.provider.getBalance(a);
-    if (bal < fund) await send(`fund ${role} with ${CFG.fundTakerEth} ETH`, deployer.sendTransaction({ to: a, value: fund - bal }));
+    if (bal < fund) await send(`fund ${role} with ${CFG.fundTakerEth} ETH`, () => deployer.sendTransaction({ to: a, value: fund - bal }));
+    else skip(`fund ${role}`);
     console.log(`  ${role.padEnd(11)} ${a}  ${ethers.formatEther(await ethers.provider.getBalance(a))} ETH`);
   }
 
@@ -89,8 +148,8 @@ async function main() {
   const aqua = await deploy<any>("aqua", "Aqua");
   const usdc = await deploy<any>("usdc", "TokenCustomDecimalsMock", ["USD Coin (AegisJIT mock)", "USDC", 0, 6]);
   const weth = await deploy<any>("weth", "TokenCustomDecimalsMock", ["Wrapped Ether (AegisJIT mock)", "WETH", 0, 18]);
-  const usdcAddr = await usdc.getAddress(), wethAddr = await weth.getAddress();
-  const router = await deploy<any>("router", "AegisSwapVMRouter", [await aqua.getAddress(), wethAddr, deployerAddr, "AegisJIT", "1"]);
+  const usdcAddr = await usdc.getAddress(), wethAddr = await weth.getAddress(), aquaAddr = await aqua.getAddress();
+  const router = await deploy<any>("router", "AegisSwapVMRouter", [aquaAddr, wethAddr, deployerAddr, "AegisJIT", "1"]);
   const routerAddr = await router.getAddress();
   const hook = await deploy<any>("hook", "AegisJITVaultHook", [routerAddr]);
   await deploy<any>("strategy", "AegisJITStrategy");
@@ -114,69 +173,92 @@ async function main() {
   const worldIdAdapter = await deploy<any>("worldIdAdapter", "WorldIDAdapter", [
     await worldIdRouter.getAddress(), WORLD_ID_GROUP, CFG.worldIdAppId, CFG.worldIdAction, CFG.worldIdEpochDuration, CFG.worldIdEpochGrace,
   ]);
+  checkpoint();
 
-  // ---------------- Maker: capital into the vaults, allowances for Aqua + hook
+  // ---------------- Maker: capital into the vaults, allowances for Aqua + hook (all idempotent)
   banner("3 · Maker capital → ERC-4626 vaults, allowances");
-  const usdcVaultAddr = await usdcVault.getAddress(), wethVaultAddr = await wethVault.getAddress(), hookAddr = await hook.getAddress(), aquaAddr = await aqua.getAddress();
-  await send("mint 1,000,000 USDC to Maker", usdc.mint(deployerAddr, CFG.usdcLiquidity));
-  await send("mint 400 WETH to Maker", weth.mint(deployerAddr, CFG.wethLiquidity));
-  await send("approve USDC → vault", usdc.approve(usdcVaultAddr, CFG.usdcLiquidity));
-  await send("approve WETH → vault", weth.approve(wethVaultAddr, CFG.wethLiquidity));
-  await send("deposit 1,000,000 USDC into avUSDC", usdcVault.deposit(CFG.usdcLiquidity, deployerAddr));
-  await send("deposit 400 WETH into avWETH", wethVault.deposit(CFG.wethLiquidity, deployerAddr));
-  for (const [t, label] of [[usdc, "USDC"], [weth, "WETH"]] as const) {
-    await send(`approve ${label} → Aqua (pull)`, t.approve(aquaAddr, ethers.MaxUint256));
-    await send(`approve ${label} → JIT hook (re-deposit)`, t.approve(hookAddr, ethers.MaxUint256));
+  const usdcVaultAddr = await usdcVault.getAddress(), wethVaultAddr = await wethVault.getAddress(), hookAddr = await hook.getAddress();
+  for (const [token, vault, vaultAddr, target, sym, fmt] of [
+    [usdc, usdcVault, usdcVaultAddr, CFG.usdcLiquidity, "USDC", (v: bigint) => fmtUsdc(v, 0)],
+    [weth, wethVault, wethVaultAddr, CFG.wethLiquidity, "WETH", (v: bigint) => fmtWeth(v, 0)],
+  ] as const) {
+    const inVault: bigint = await vault.convertToAssets(await vault.balanceOf(deployerAddr));
+    if (inVault >= target) { skip(`Maker ${sym} vault position (${fmt(inVault)})`); continue; }
+    const missing = target - inVault;
+    await ensureBalance(token, deployerAddr, missing, `mint ${fmt(missing)} ${sym} to Maker`);
+    if ((await token.allowance(deployerAddr, vaultAddr)) < missing) await send(`approve ${sym} → vault`, () => token.approve(vaultAddr, missing));
+    await send(`deposit ${fmt(missing)} ${sym} into the ${sym} vault`, () => vault.deposit(missing, deployerAddr));
   }
-  await send("approve avUSDC shares → JIT hook (withdraw)", usdcVault.approve(hookAddr, ethers.MaxUint256));
-  await send("approve avWETH shares → JIT hook (withdraw)", wethVault.approve(hookAddr, ethers.MaxUint256));
+  for (const [t, label] of [[usdc, "USDC"], [weth, "WETH"]] as const) {
+    await ensureAllowance(t, deployer, deployerAddr, aquaAddr, `approve ${label} → Aqua (pull)`);
+    await ensureAllowance(t, deployer, deployerAddr, hookAddr, `approve ${label} → JIT hook (re-deposit)`);
+  }
+  await ensureAllowance(usdcVault, deployer, deployerAddr, hookAddr, "approve avUSDC shares → JIT hook (withdraw)");
+  await ensureAllowance(wethVault, deployer, deployerAddr, hookAddr, "approve avWETH shares → JIT hook (withdraw)");
 
-  // ---------------- strategy
+  // ---------------- strategy (params are checkpointed so a resume ships the same order, not a new one)
   banner("4 · Ship the AegisJIT strategy to Aqua (virtual balances; no tokens move)");
-  const latest = await ethers.provider.getBlock("latest");
-  const params: AegisStrategyParams = {
-    maker: deployerAddr,
-    token0: usdcAddr, token1: wethAddr,
-    vault0: usdcVaultAddr, vault1: wethVaultAddr,
-    jitHook: hookAddr,
-    deadline: BigInt(latest!.timestamp + 30 * 24 * 3600),
-    zkVerifierTypes: ZKVerifierType.ANY,
-    worldIdVerifier: await worldIdAdapter.getAddress(),
-    aadhaarVerifier: await adapter.getAddress(),
-    zkMode: CFG.zkMode,
-    requiredStateCode: CFG.requiredStateCode,
-    lambdaBps: CFG.lambdaBps,
-    virtualBoostBps: CFG.virtualBoostBps,
-    exposureWindowSec: CFG.exposureWindowSec,
-    allocation0: CFG.usdcLiquidity, allocation1: CFG.wethLiquidity,
-    floor01: { amountIn: USDC(CFG.minSellPriceUsdc), amountOut: WETH(1) },
-    floor10: { amountIn: WETH(1), amountOut: USDC(CFG.maxBuyPriceUsdc) },
-    baseFeeBps: CFG.baseFeeBps, maxSurgeFeeBps: CFG.maxSurgeFeeBps,
-    impactThresholdBps: CFG.impactThresholdBps, decayWindowSec: CFG.decayWindowSec,
-    salt: 0n,
-  };
+  let params: AegisStrategyParams;
+  if (partial.params) {
+    params = { ...partial.params, deadline: BigInt(partial.params.deadline), allocation0: BigInt(partial.params.allocation0), allocation1: BigInt(partial.params.allocation1),
+      impactThresholdBps: BigInt(partial.params.impactThresholdBps), salt: BigInt(partial.params.salt ?? 0),
+      floor01: { amountIn: BigInt(partial.params.floor01.amountIn), amountOut: BigInt(partial.params.floor01.amountOut) },
+      floor10: { amountIn: BigInt(partial.params.floor10.amountIn), amountOut: BigInt(partial.params.floor10.amountOut) } };
+  } else {
+    const latest = await ethers.provider.getBlock("latest");
+    params = {
+      maker: deployerAddr,
+      token0: usdcAddr, token1: wethAddr,
+      vault0: usdcVaultAddr, vault1: wethVaultAddr,
+      jitHook: hookAddr,
+      deadline: BigInt(latest!.timestamp + 30 * 24 * 3600),
+      zkVerifierTypes: ZKVerifierType.ANY,
+      worldIdVerifier: await worldIdAdapter.getAddress(),
+      aadhaarVerifier: await adapter.getAddress(),
+      zkMode: CFG.zkMode,
+      requiredStateCode: CFG.requiredStateCode,
+      lambdaBps: CFG.lambdaBps,
+      virtualBoostBps: CFG.virtualBoostBps,
+      exposureWindowSec: CFG.exposureWindowSec,
+      allocation0: CFG.usdcLiquidity, allocation1: CFG.wethLiquidity,
+      floor01: { amountIn: USDC(CFG.minSellPriceUsdc), amountOut: WETH(1) },
+      floor10: { amountIn: WETH(1), amountOut: USDC(CFG.maxBuyPriceUsdc) },
+      baseFeeBps: CFG.baseFeeBps, maxSurgeFeeBps: CFG.maxSurgeFeeBps,
+      impactThresholdBps: CFG.impactThresholdBps, decayWindowSec: CFG.decayWindowSec,
+      salt: 0n,
+    };
+    partial.params = params; checkpoint();
+  }
   const order = AegisProgramBuilder.buildOrder(params);
-  const shipRc = await send("Aqua.ship(router, strategy, [USDC, WETH], [1M, 400])",
-    aqua.ship(routerAddr, AegisProgramBuilder.encodeStrategy(order), [usdcAddr, wethAddr], [CFG.usdcLiquidity, CFG.wethLiquidity]));
   const orderHash: string = await router.hash(order);
+  const [, shippedCount] = await aqua.rawBalances(deployerAddr, routerAddr, orderHash, usdcAddr);
+  let shipRc: any;
+  if (shippedCount !== 0n) {
+    skip(`Aqua.ship (orderHash ${short(orderHash)} already active)`);
+    shipRc = (partial as any).ship ?? { hash: "(shipped in an earlier run)", blockNumber: 0 };
+  } else {
+    shipRc = await send("Aqua.ship(router, strategy, [USDC, WETH], [1M, 400])",
+      () => aqua.ship(routerAddr, AegisProgramBuilder.encodeStrategy(order), [usdcAddr, wethAddr], [CFG.usdcLiquidity, CFG.wethLiquidity]));
+    (partial as any).ship = { hash: shipRc.hash, blockNumber: shipRc.blockNumber }; checkpoint();
+  }
 
   // ---------------- takers: tokens + router allowances
   banner("5 · Takers: mint mock tokens, approve the router");
   for (const role of TAKER_ROLES) {
     const w = takers[role];
-    await send(`mint 2,000,000 USDC to ${role}`, usdc.mint(w.address, CFG.takerUsdc));
-    await send(`mint 500 WETH to ${role}`, weth.mint(w.address, CFG.takerWeth));
-    await send(`${role}: approve USDC → router`, usdc.connect(w).approve(routerAddr, ethers.MaxUint256));
-    await send(`${role}: approve WETH → router`, weth.connect(w).approve(routerAddr, ethers.MaxUint256));
+    await ensureBalance(usdc, w.address, CFG.takerUsdc, `mint 2,000,000 USDC to ${role}`);
+    await ensureBalance(weth, w.address, CFG.takerWeth, `mint 500 WETH to ${role}`);
+    await ensureAllowance(usdc, w, w.address, routerAddr, `${role}: approve USDC → router`);
+    await ensureAllowance(weth, w, w.address, routerAddr, `${role}: approve WETH → router`);
   }
-  await send("human: approve USDC → forwarder (aggregator scenario)", usdc.connect(takers.human).approve(await forwarder.getAddress(), ethers.MaxUint256));
+  await ensureAllowance(usdc, takers.human, takers.human.address, await forwarder.getAddress(), "human: approve USDC → forwarder (aggregator scenario)");
 
   // ---------------- record
   const rec: DeploymentRecord = {
     network: network.name, chainId, deployedAt: new Date().toISOString(),
     deployer: deployerAddr, maker: deployerAddr,
     takers: Object.fromEntries(TAKER_ROLES.map((r) => [r, takers[r].address])) as any,
-    contracts,
+    contracts: partial.contracts,
     cfg: Object.fromEntries(Object.entries(CFG).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v])) as any,
     params: params as any,
     order, orderHash,
@@ -194,9 +276,9 @@ async function main() {
   banner("Summary");
   table(`AegisJIT on ${network.name}`, [
     ["Maker (deployer)", addressLink(chainId, deployerAddr)],
-    ...Object.entries(contracts).map(([k, c]) => [k, addressLink(chainId, c.address)] as [string, string]),
+    ...Object.entries(partial.contracts).map(([k, c]) => [k, addressLink(chainId, c.address)] as [string, string]),
     ["orderHash", orderHash],
-    ["ship tx", txLink(chainId, shipRc.hash)],
+    ["ship tx", shipRc.hash.startsWith("0x") ? txLink(chainId, shipRc.hash) : shipRc.hash],
     ["Maker vault position", `${fmtUsdc(await usdcVault.convertToAssets(await usdcVault.balanceOf(deployerAddr)), 0)} USDC + ${fmtWeth(await wethVault.convertToAssets(await wethVault.balanceOf(deployerAddr)), 0)} WETH`],
     ["record", file],
   ]);

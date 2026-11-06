@@ -61,3 +61,6 @@ private/
 *.p12
 *.pfx
 !packages/zk-aadhaar/prover/test-signer/aegis-test-signer.*.pem
+
+# Deploy checkpoints (resumable deploy script); the final aegis.json is committed instead
+deployments/*/aegis.partial.json

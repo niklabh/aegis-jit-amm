@@ -36,6 +36,7 @@ const config: HardhatUserConfig = {
       // SEPOLIA_RPC_URL falls back to a public endpoint; the deployer key comes from PRIVATE_KEY (see below)
       url: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
       accounts: deployerAccounts(),
+      timeout: 120_000, // public / free-tier RPCs occasionally stall; the deploy script also retries and resumes
     },
     // Add your deployment network here and the corresponding URL in the .env file
   },
