@@ -35,6 +35,10 @@ npx hardhat run scripts/demo-mumbai.ts                # CLI demo: real Aadhaar p
 cd ui && npm run smoke                                # headless, both ZK Pass tabs: World ID Semaphore proof + Aadhaar QR → RSA → Groth16 → on-chain verify → swap()
 ```
 
+**Hosted dashboard:** <https://aegis-jit.niklabh811.workers.dev> is the read-only World Chain Sepolia view: live quotes, the
+disassembled order, both passes, and the World ID pass verifying a Simulator proof through the chain's real
+World ID Router. Swaps, the split sandbox and Aadhaar proving need the local stack below.
+
 Without the artifacts, the real-proof tests **skip with a warning** and the demo falls back to
 the mock verifiers, with a banner saying so. Each real Aadhaar proof takes ~13 s in Node and a
 few GB of RAM; a World ID (Semaphore depth-30) proof takes ~0.4 s.
@@ -423,6 +427,13 @@ the UI.
 - `cd ui && npm run smoke:public` runs the read-only checks against a public deployment
   (`scripts/ui-deployment.ts`): live order, quotes per tier, fee mirror, 0x9A cap, the
   read-only guards and the adapter's wiring to the chain's World ID Router.
+- **Hosted copy** at <https://aegis-jit.niklabh811.workers.dev>: `ui/worker/index.ts` + `ui/wrangler.toml` deploy the
+  Vite build as Cloudflare Worker static assets, and the Worker serves the two prover endpoints the public page
+  needs, `GET /health` and `POST /worldid/rp-context`, signing IDKit requests with the app's relying-party key
+  held as a Worker secret (`PRODUCTION_WORLD_ID_RP_ID`, `PRODUCTION_WORLD_ID_RP_SIGNING_KEY`; the app id is a
+  plain var). The client falls back to its own origin for those endpoints whenever the page is not served from a
+  loopback host, so one bundle runs locally against the prover and hosted against the Worker. Aadhaar proving
+  stays on the user's machine and the hosted page says so. `npm --prefix ui run deploy` builds and deploys.
 - `cd ui && npm run smoke` checks the same client library headlessly against a seeded node,
   for both tabs: it rebuilds the World ID tree, generates a Semaphore proof with the dashboard's
   own code path, verifies it on-chain, rebuilds the takerTraits header, compares the World ID
@@ -656,7 +667,9 @@ flow has a server side even for a demo:
    dashboard in **read-only mode**: live quotes, buckets, the disassembled order from Worldscan's
    chain, both ZK passes; `swap()` and the split sandbox are disabled (no signer in the browser,
    no `evm_snapshot` on a public node) and point at the CLI. `npm --prefix ui run smoke:public`
-   checks that path headlessly, including that the adapter is wired to the real router.
+   checks that path headlessly, including that the adapter is wired to the real router. The hosted copy at
+   <https://aegis-jit.niklabh811.workers.dev> is this mode served from Cloudflare, with the Worker in `ui/worker/` as
+   the RP signer.
 3. 🌍 World ID tab → **Verify with World App / Simulator**. `IDKitRequestWidget` opens with
    `preset = orbLegacy({ signal: <Verified Human taker> })`, `allow_legacy_proofs` and
    `environment = staging`; World App or the Simulator (`https://simulator.worldcoin.org`) scans the
@@ -704,6 +717,8 @@ npx hardhat run --network worldchainSepolia scripts/verify-sepolia.ts      # Wor
 npx hardhat run --network worldchainSepolia scripts/ui-deployment.ts       # read-only dashboard config
 npm --prefix packages/zk-aadhaar run prover:serve                          # Aadhaar prover + World ID request signing
 npm --prefix ui run dev                                                    # http://127.0.0.1:5173
+npm --prefix ui run deploy                                                 # hosted copy: Cloudflare Worker + static assets
+#   once: cd ui && wrangler secret put PRODUCTION_WORLD_ID_RP_ID && wrangler secret put PRODUCTION_WORLD_ID_RP_SIGNING_KEY
 ```
 
 ## Project structure
