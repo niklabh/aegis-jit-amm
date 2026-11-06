@@ -316,9 +316,14 @@ export function feeModel(dep: Deployment, st: ChainState, gross: bigint, human: 
   const vIn = st.aqua.usdc + BigInt(c.usdcLiquidity) * boost / 10_000n;
   const vOut = st.aqua.weth + BigInt(c.wethLiquidity) * boost / 10_000n;
   const now = st.timestamp + 1n;
-  const active = st.window.start !== 0n && now < st.window.start + BigInt(c.decayWindowSec);
-  const ref = active ? st.window.ref : vIn;
-  const F = active ? st.window.flow : 0n;
+  // fixed-grid token bucket (mirrors VolatilitySurgeFee._bucket): constant inside a window, leaks one threshold per elapsed window
+  let F = 0n, ref = vIn;
+  if (c.decayWindowSec !== 0 && st.window.start !== 0n) {
+    const k = (now - st.window.start) / BigInt(c.decayWindowSec);
+    const leak = k * (st.window.ref * BigInt(c.impactThresholdBps) / 10_000n);
+    if (st.window.flow > leak) { F = st.window.flow - leak; ref = st.window.ref; }
+  }
+  const active = F !== 0n;
   const T = ref * BigInt(c.impactThresholdBps) / 10_000n;
   const g0 = T > F ? T - F : 0n;
   const base = BigInt(c.baseFeeBps);
@@ -401,7 +406,7 @@ export function disassemble(program: Hex, cfgDecimals?: { tokenA: Address; usdc:
           ["baseFee", `${base} (${pctBps(base, FEE_BPS)}; human ${pctBps(base / 2n, FEE_BPS)})`],
           ["maxSurgeFee", `${max} (${pctBps(max, FEE_BPS)} marginal)`],
           ["impactThreshold", `${thr} bps (${pctBps(thr, 10_000n)} of balanceIn)`],
-          ["decayWindowSec", `${win} s rolling flow window`],
+          ["decayWindowSec", `${win} s flow window (token bucket: leaks one threshold per window)`],
         );
         break;
       }

@@ -53,19 +53,28 @@ library VolatilitySurgeFeeArgsBuilder {
 /// @title VolatilitySurgeFee — opcode 0x7A
 /// @notice Dynamic LVR / toxic-flow fee on `amountIn`.
 ///
-///   Marginal fee rate on cumulative in-window flow x (gross tokenIn):
+///   Marginal fee rate on the flow x accumulated in the bucket (gross tokenIn):
 ///       rate(x) = b          for x <  T
 ///       rate(x) = b + P      for x >= T
 ///   where b = baseFee (halved for verified humans), P = maxSurgeFee - baseFee,
 ///   T = refBalanceIn * impactThresholdBps / 1e4.
 ///
-///   For a trade of gross size g with F flow already in the window, G0 = max(0, T - F):
+///   For a trade of gross size g with F flow already in the bucket, G0 = max(0, T - F):
 ///       fee(g) = ceil((g*b + max(0, g - G0)*P) / BPS),   net(g) = g - fee(g)
 ///
 ///   The effective rate rises piecewise-linearly from b toward maxSurgeFee. Because the
-///   schedule is integrated over cumulative window flow (with a frozen reference balance),
-///   splitting a trade inside the window pays the same total fee as the single trade —
+///   schedule is integrated over the accumulated flow (with a frozen reference balance),
+///   splitting a trade inside a window pays the same total fee as the single trade —
 ///   this is what makes the fee sub-additive. A stateless size-based fee cannot be.
+///
+///   Flow bucket (`decayWindowSec` = W). The bucket is a token bucket evaluated on a fixed
+///   time grid: inside a window the accumulated flow is constant, and every full window that
+///   elapses leaks exactly one threshold T of flow (it does NOT reset to zero). So the Maker
+///   sells at most T per window at the base rate in steady state, a burst of k*T keeps the
+///   surge on for k windows, and at most 2T can ever pass at the base rate across a single
+///   window boundary. Pricing depends on time only through the window index, so `quote()`
+///   equals `swap()` to the wei whenever both land in the same window. When the bucket is
+///   empty the grid re-anchors at the next trade and the reference balance refreshes.
 ///
 /// @dev Window state is written ONLY when `!ctx.vm.isStaticContext`, after amounts are computed,
 ///      so `quote()` (STATICCALL) and `swap()` read identical pre-state and return identical amounts.
@@ -74,9 +83,9 @@ abstract contract VolatilitySurgeFee {
     using SafeCast for uint256;
 
     struct SurgeWindow {
-        uint40 start;          // window start timestamp (0 = never started)
-        uint216 flow;          // gross tokenIn flow accumulated in the window
-        uint256 refBalanceIn;  // pricing balanceIn frozen at window start
+        uint40 start;          // start of the current window on the grid (0 = never started)
+        uint216 flow;          // gross tokenIn flow in the bucket during that window
+        uint256 refBalanceIn;  // pricing balanceIn frozen while the bucket is non-empty
     }
 
     error SurgeFeeShouldBeAppliedBeforeSwapAmountsComputation();
@@ -85,7 +94,7 @@ abstract contract VolatilitySurgeFee {
 
     mapping(bytes32 orderHash => mapping(address tokenIn => SurgeWindow)) internal _surgeWindows;
 
-    /// @notice Current surge window state for an order/direction (raw, not expiry-adjusted)
+    /// @notice Raw bucket state for an order/direction (not leak-adjusted; see `_bucket`)
     function surgeWindow(bytes32 orderHash, address tokenIn) external view returns (uint256 start, uint256 flow, uint256 refBalanceIn) {
         SurgeWindow storage w = _surgeWindows[orderHash][tokenIn];
         return (w.start, w.flow, w.refBalanceIn);
@@ -106,9 +115,7 @@ abstract contract VolatilitySurgeFee {
         uint256 p = maxSurgeFeeBps - baseFeeBps;
 
         SurgeWindow storage w = _surgeWindows[ctx.query.orderHash][ctx.query.tokenIn];
-        bool active = decayWindowSec != 0 && w.start != 0 && block.timestamp < uint256(w.start) + decayWindowSec;
-        uint256 flow = active ? w.flow : 0;
-        uint256 refBalanceIn = active ? w.refBalanceIn : ctx.swap.balanceIn;
+        (uint256 flow, uint256 refBalanceIn, uint256 start) = _bucket(w, ctx.swap.balanceIn, impactThresholdBps, decayWindowSec);
 
         uint256 threshold = refBalanceIn * impactThresholdBps / VolatilitySurgeFeeArgsBuilder.UTILIZATION_BPS;
         uint256 g0 = threshold > flow ? threshold - flow : 0;
@@ -128,15 +135,26 @@ abstract contract VolatilitySurgeFee {
         }
 
         if (!ctx.vm.isStaticContext && decayWindowSec != 0) {
-            if (!active) {
-                w.start = block.timestamp.toUint40();
-                w.refBalanceIn = refBalanceIn;
-                w.flow = gross.toUint216();
-            } else {
-                w.flow = (flow + gross).toUint216();
-            }
-            emit SurgeWindowUpdated(ctx.query.orderHash, ctx.query.tokenIn, w.start, w.flow, w.refBalanceIn);
+            w.start = start.toUint40();
+            w.flow = (flow + gross).toUint216();
+            w.refBalanceIn = refBalanceIn;
+            emit SurgeWindowUpdated(ctx.query.orderHash, ctx.query.tokenIn, start, flow + gross, refBalanceIn);
         }
+    }
+
+    /// @dev Leak-adjusted bucket: flow left in the bucket, the reference balance to price with, and
+    ///      the grid-aligned start of the window the trade falls in.
+    function _bucket(SurgeWindow storage w, uint256 balanceIn, uint256 impactThresholdBps, uint256 decayWindowSec)
+        private
+        view
+        returns (uint256 flow, uint256 refBalanceIn, uint256 start)
+    {
+        if (decayWindowSec == 0 || w.start == 0) return (0, balanceIn, block.timestamp);
+        uint256 elapsedWindows = (block.timestamp - w.start) / decayWindowSec;
+        if (elapsedWindows == 0) return (w.flow, w.refBalanceIn, w.start);
+        uint256 leak = elapsedWindows * (w.refBalanceIn * impactThresholdBps / VolatilitySurgeFeeArgsBuilder.UTILIZATION_BPS);
+        if (w.flow <= leak) return (0, balanceIn, block.timestamp); // bucket empty: re-anchor the grid, refresh the reference
+        return (w.flow - leak, w.refBalanceIn, w.start + elapsedWindows * decayWindowSec);
     }
 
     /// @dev fee(g) = ceil((g*b + max(0, g - g0)*p) / BPS)

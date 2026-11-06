@@ -456,6 +456,42 @@ describe("AegisJIT", function () {
       expect(cool.amountOut).to.be.gt(hot.amountOut);
     });
 
+    it("heavy flow keeps the surge on across window boundaries: the bucket leaks one threshold per window, it never resets", async function () {
+      const env = await loadFixture(baseFixture);
+      const bot = env.accounts.bot;
+      const data = env.takerData({ tokenIn: env.addr.usdc });
+      const W = env.cfg.decayWindowSec;
+      // 60k gross on a fresh bucket: T = 20k (1% of the 2M virtual balanceIn) => 40k of it paid surge
+      await env.swap(bot, USDC(60_000), data);
+      const [start0, flow0, ref0] = await env.contracts.router.surgeWindow(env.orderHash, env.addr.usdc);
+      expect(flow0).to.equal(USDC(60_000));
+
+      // one window later the bucket holds 60k - 20k = 40k > T: a 10k trade is entirely in the surge band
+      await time.increase(W + 1);
+      const afterOne = await env.quote(bot, USDC(10_000), data);
+      const aq = await env.aquaBalances();
+      const vIn = aq.usdc + env.cfg.usdcLiquidity * BigInt(env.cfg.virtualBoostBps - 10_000) / 10_000n;
+      const vOut = aq.weth + env.cfg.wethLiquidity * BigInt(env.cfg.virtualBoostBps - 10_000) / 10_000n;
+      const b = BigInt(env.cfg.baseFeeBps), p = BigInt(env.cfg.maxSurgeFeeBps) - b;
+      const feeAllSurge = (USDC(10_000) * b + USDC(10_000) * p + FEE_BPS - 1n) / FEE_BPS;
+      const netAllSurge = USDC(10_000) - feeAllSurge;
+      expect(afterOne.amountOut).to.equal(netAllSurge * vOut / (vIn + netAllSurge));
+
+      // a swap in window 2 advances the grid by exactly one window and keeps the frozen reference
+      const s = await env.swap(bot, USDC(10_000), data);
+      expect(s.amountOut).to.equal(afterOne.amountOut);
+      const [start1, flow1, ref1] = await env.contracts.router.surgeWindow(env.orderHash, env.addr.usdc);
+      expect(start1).to.equal(start0 + BigInt(W));
+      expect(flow1).to.equal(USDC(50_000)); // 40k left + 10k
+      expect(ref1).to.equal(ref0);
+
+      // three more windows: 50k - 3 * 20k < 0 => bucket empty, grid re-anchors, base fee only
+      await time.increase(3 * W + 1);
+      const cool = await env.quote(bot, USDC(10_000), data);
+      expect(cool.amountOut).to.equal(await modelExactInFresh(env, env.addr.usdc, USDC(10_000), false));
+      expect(cool.amountOut).to.be.gt(afterOne.amountOut);
+    });
+
     it("rejects malformed fee configs at build time", async function () {
       const env = await loadFixture(baseFixture);
       expect(() => AegisProgramBuilder.buildProgram({ ...env.params, baseFeeBps: 10, maxSurgeFeeBps: 5 })).to.throw();

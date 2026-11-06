@@ -60,11 +60,16 @@ async function surgeFeeBreakdown(env: AegisEnv, gross: bigint, human: boolean) {
   const { cfg } = env;
   const [start, flow, ref] = await env.contracts.router.surgeWindow(env.orderHash, env.addr.usdc);
   const now = BigInt((await ethers.provider.getBlock("latest"))!.timestamp) + 1n;
-  const active = start !== 0n && now < start + BigInt(cfg.decayWindowSec);
   const aq = await env.aquaBalances();
   const virtualIn = aq.usdc + cfg.usdcLiquidity * BigInt(cfg.virtualBoostBps - 10_000) / 10_000n;
-  const refB = active ? ref : virtualIn;
-  const F = active ? flow : 0n;
+  // fixed-grid token bucket (mirrors VolatilitySurgeFee._bucket): constant inside a window, leaks one threshold per elapsed window
+  let F = 0n, refB = virtualIn;
+  if (cfg.decayWindowSec !== 0 && start !== 0n) {
+    const k = (now - start) / BigInt(cfg.decayWindowSec);
+    const leak = k * (ref * cfg.impactThresholdBps / 10_000n);
+    if (flow > leak) { F = flow - leak; refB = ref; }
+  }
+  const active = F !== 0n;
   const T = refB * cfg.impactThresholdBps / 10_000n;
   const g0 = T > F ? T - F : 0n;
   const base = BigInt(cfg.baseFeeBps);
@@ -397,9 +402,15 @@ async function main() {
 
 
   // ---------------- Scenario 4 ----------------
-  banner("4 · Split-attack defeat: 1 x 50,000 vs 5 x 10,000 USDC in one rolling window");
+  banner("4 · Split-attack defeat: 1 x 50,000 vs 5 x 10,000 USDC in one flow window");
   {
-    await rpc("evm_increaseTime", [env.cfg.decayWindowSec + 1]); // start from a fresh 0x7A window
+    // The 0x7A bucket never resets: it leaks one threshold (1% of the reference balanceIn) per window.
+    // Scenarios 1-2 left flow in it, so a clean base-fee A/B needs ceil(flow / T) windows to pass.
+    const [, bucketFlow, bucketRef] = await env.contracts.router.surgeWindow(env.orderHash, env.addr.usdc);
+    const T = bucketRef * env.cfg.impactThresholdBps / 10_000n;
+    const windows = T === 0n ? 1n : (bucketFlow + T - 1n) / T;
+    console.log(`${C.dim}  0x7A bucket holds ${fmtUsdc(bucketFlow)} USDC of flow; it leaks ${fmtUsdc(T)} per ${env.cfg.decayWindowSec}s window (no reset) → fast-forward ${windows} windows${C.reset}`);
+    await rpc("evm_increaseTime", [Number(windows) * env.cfg.decayWindowSec + 1]);
     await rpc("evm_mine");
     const data = env.takerData({ tokenIn: env.addr.usdc });
     const snap = await rpc("evm_snapshot");
@@ -433,7 +444,7 @@ async function main() {
     ]);
     const feeOk = splitFee >= singleFee.total;
     const outOk = splitOut <= single.amountOut;
-    table("0x7A rolling-window accumulator vs split gaming", [
+    table("0x7A flow-bucket accumulator vs split gaming", [
       ["split fee >= single fee", `${fmtUsdc(splitFee)} >= ${fmtUsdc(singleFee.total)} USDC  ${feeOk ? C.green + "✔" : C.red + "✘"}${C.reset}`],
       ["split WETH out <= single", `${fmtWeth(splitOut, 6)} <= ${fmtWeth(single.amountOut, 6)}  ${outOk ? C.green + "✔ sub-additive" : C.red + "✘"}${C.reset}`],
       ["stateless per-trade fee would charge", `${C.yellow}${fmtUsdc(naiveTotal)} USDC${C.reset}  (each 10k leg below threshold → surge dodged; counterfactual, off-chain)`],
