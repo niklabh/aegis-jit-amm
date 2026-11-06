@@ -563,10 +563,13 @@ live buckets with `router.surgeWindow(orderHash, usdc)` and `router.exposureWind
 The same stack is deployed on World Chain Sepolia (chainId 4801) with one difference: there is no
 `MockWorldIDRouter`. `WorldIDAdapter` points at the chain's World ID Router,
 [`0x57f928158C3EE7CDad1e4D8642503c4D0201f611`](https://sepolia.worldscan.org/address/0x57f928158C3EE7CDad1e4D8642503c4D0201f611),
-for the staging app `app_2d47490f3897300939bf0fab0426cf79` registered in the World Developer Portal
-and the action `aegis-jit-fee-tier`. Proofs come from World App, or from the World ID Simulator for
-this staging app, through IDKit; the project's local identity tree cannot prove into this deployment.
-All 13 contracts are source-verified on Worldscan. Records: [`deployments/worldchainSepolia/`](deployments/worldchainSepolia/).
+for the app `app_388962c8b7d2d26b09dccda085144d58` registered in the World Developer Portal
+(`developer.world.org`) and the action `aegis-jit-fee-tier`. Proofs come from World App, or from the
+World ID Simulator with `environment: "staging"`, through IDKit; the project's local identity tree
+cannot prove into this deployment. All contracts are source-verified on Worldscan. Records:
+[`deployments/worldchainSepolia/`](deployments/worldchainSepolia/). The first order on these
+contracts (salt 0, `previousOrders` in `aegis.json`) used an adapter bound to an app from the
+staging portal; see the note on the two portals below.
 
 <!-- worldchainSepolia:deployment -->
 Deployed 2026-11-06 on worldchainSepolia (chainId 4801) by [`0x467071F2ee89347354ee91105d8dbA129D1c8eE6`](https://sepolia.worldscan.org/address/0x467071F2ee89347354ee91105d8dbA129D1c8eE6), who is also the Maker.
@@ -585,12 +588,12 @@ Deployed 2026-11-06 on worldchainSepolia (chainId 4801) by [`0x467071F2ee8934735
 | Anon Aadhaar v2 Groth16 verifier (vendored snarkjs, ecPairing) | [`0xbF1C48baC951E1D5429b27017585A4a920C29CCb`](https://sepolia.worldscan.org/address/0xbF1C48baC951E1D5429b27017585A4a920C29CCb) | [`0xce9f477d…0f145e`](https://sepolia.worldscan.org/tx/0xce9f477d6dddf554d7177417d03574f6c412ff37062a69d8085f1a38c10f145e) |
 | AnonAadhaarGroth16Verifier (UIDAI key set; test signer here) | [`0x100d5447596FF130Eb4813BA740f315cF9948d3F`](https://sepolia.worldscan.org/address/0x100d5447596FF130Eb4813BA740f315cF9948d3F) | [`0xb11bcb84…bc8069`](https://sepolia.worldscan.org/tx/0xb11bcb843fbf2f30ac066898fa2357429abf8f3fd0e13bf29cf8423e8cbc8069) |
 | AnonAadhaarAdapter (0x2A type 2) | [`0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc`](https://sepolia.worldscan.org/address/0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc) | [`0xb8479849…385657`](https://sepolia.worldscan.org/tx/0xb84798494dde5ef4baf79d30de880f3491500c816e68786f867e0a384f385657) |
-| WorldIDAdapter (0x2A type 1) | [`0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882`](https://sepolia.worldscan.org/address/0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882) | [`0x354bf3fb…d553cc`](https://sepolia.worldscan.org/tx/0x354bf3fb9449faf29eaab64b36259184f72b94ed20ae6d8592e68c32bdd553cc) |
+| WorldIDAdapter (0x2A type 1) | [`0x1387bDC1C396f96242e7134Dd39a425Da5C3F4d8`](https://sepolia.worldscan.org/address/0x1387bDC1C396f96242e7134Dd39a425Da5C3F4d8) | [`0xa7bf5e1b…e49d14`](https://sepolia.worldscan.org/tx/0xa7bf5e1bbf5876ce9011c2112392d1d04d857f565fc6499796d3268e94e49d14) |
 
 | Strategy | |
 |---|---|
-| orderHash | `0x697fbe007a5e999b2581806240cfa67c65497df51372ff8a716de027451f3a81` |
-| Aqua.ship tx | [`0xcef0bffd…5c838c`](https://sepolia.worldscan.org/tx/0xcef0bffdb287887fcec44b1e14dc1f1fa79a84f15ec1ad2fad405cec145c838c) (block 36708564) |
+| orderHash | `0x10400be3efaf65d4022c6e0fc1430d2665535e146fd7c1ed730faf9ae171e9da` |
+| Aqua.ship tx | [`0x93fd9272…f2c668`](https://sepolia.worldscan.org/tx/0x93fd92723c96ac719090f182d583136444c8fac1b89ff904b9f7848365f2c668) (block 36711209) |
 | Maker capital | 1,000,000 USDC + 400 WETH in the two vaults; Aqua book = the same, as virtual balances |
 | λ / boost / windows | 25% per execution and per 600s window / 2x / 600s fee bucket |
 | fees | base 0.3% (humans 0.15%), surge marginal 1.5% above 1% utilisation |
@@ -607,7 +610,7 @@ Taker accounts used by the live run:
 
 - USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).
 - MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.
-- World ID: the chain's World ID Router (0x57f928158C3EE7CDad1e4D8642503c4D0201f611); proofs come from World App / the World ID Simulator via IDKit for app app_2d47490f3897300939bf0fab0426cf79, action aegis-jit-fee-tier.
+- World ID: the chain's World ID Router (0x57f928158C3EE7CDad1e4D8642503c4D0201f611); proofs come from World App / the World ID Simulator via IDKit for app app_388962c8b7d2d26b09dccda085144d58, action aegis-jit-fee-tier.
 - ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.
 - Order deadline: 30 days after deployment.
 
@@ -615,25 +618,29 @@ Live run of `scripts/demo-sepolia.ts` on 2026-11-06:
 
 | Scenario | Taker | In | Out | USDC/WETH | Fee | Gas | Tx | Result |
 |---|---|---|---|---|---|---|---|---|
-| 0 Warm-up bot | unverified | 1,000 USDC | 0.3986 WETH | 2,508.77 | 0.300% | 393,916 | [0xf29cf186…896db992](https://sepolia.worldscan.org/tx/0xf29cf1861b3eb1442781d7ddd7451a53bc9344807b7a4bde1d681e2e896db992) | filled |
-| 1 Bot 5k (baseline) | unverified | 5,000 USDC | 1.9871 WETH | 2,516.28 | 0.300% | 335,172 | [0x4056bc96…d93644a3](https://sepolia.worldscan.org/tx/0x4056bc9667a902dbd2a704c495f16ca34747a563a5094bcf3cc25e81d93644a3) | filled |
-| 2 Human · ZK Aadhaar | Groth16 ✔ | 5,000 USDC | 1.9802 WETH | 2,525.05 | 0.150% | 608,407 | [0xee103225…017369b6](https://sepolia.worldscan.org/tx/0xee103225a691bb37b6cb0e53acc5015e3f030ba3f67cb337ff522902017369b6) | filled |
-| 3 Human · binding claim | binding ✔ | 5,000 USDC | 1.9703 WETH | 2,537.62 | 0.150% | 340,195 | [0xfa937036…8c21bc04](https://sepolia.worldscan.org/tx/0xfa937036730562726c4148e9d9bbfb60be725aff6927bd1c876a1ea68c21bc04) | filled |
-| 4 Human · via aggregator | authorised ✔ | 5,000 USDC | 1.9559 WETH | 2,556.36 | 0.390% (0.150% base + 0.240% surge) | 632,600 | [0xe5f330ba…503e8089](https://sepolia.worldscan.org/tx/0xe5f330ba53c0103c129eaf560ef0e145b2787d4f9049a07d3bbcdd8e503e8089) | filled |
-| 5 Human · World ID | World ID ✔ | 5,000 USDC | 1.9276 WETH | 2,593.96 | 1.350% (0.150% base + 1.200% surge) | 582,213 | [0x9a7b19df…cc23a0e5](https://sepolia.worldscan.org/tx/0x9a7b19df035979a24eb660da2de7631b64d947a6d9a01210a4beb9f9cc23a0e5) | filled |
-| 6 Arb bot 50k | unverified | 50,000 USDC | 18.7431 WETH | 2,667.64 | 1.500% (0.300% base + 1.200% surge) | 335,184 | [0x25f053fa…c2ab0a76](https://sepolia.worldscan.org/tx/0x25f053fa58713a03f412a72693b5b428a3e47e1acc72bb3f01ae6327c2ab0a76) | filled |
-| 7 Split 5x10k | unverified | 50,000 USDC | 17.8653 WETH | 2,798.72 | 1.500% | 1,675,920 | [5 txs](https://sepolia.worldscan.org/tx/0x10a7ecef313d96c21ab85b77861bee72af30b19cc5f9fa56791f9219caaa98da) | no gain |
-| 8 Whale 500k | unverified | 500,000 USDC | 0 WETH | — | — | 94,405 | [0xdfcd1fb6…d3c61ffb](https://sepolia.worldscan.org/tx/0xdfcd1fb6170a046f21670e77ac0cd18a8dd04f20327c0f3ed181231fd3c61ffb) | blocked 0x9A |
-| 9 Whale split 4x25% | unverified | 4 txs | 88.2930 WETH | — | — | — | [4 txs](https://sepolia.worldscan.org/tx/0x9e8d41edcdcd1367bf6529a91bb7a20d2951e68bc25c8f99f180a4afeaf04b09) | 1 of 4 filled |
+| 0 Warm-up bot | unverified | 1,000 USDC | 0.3986 WETH | 2,508.77 | 0.300% | 394,485 | [0x23856b6f…088bcf03](https://sepolia.worldscan.org/tx/0x23856b6f0600f8d552a06ea906c79f794647085abb789fd93a9a5296088bcf03) | filled |
+| 1 Bot 5k (baseline) | unverified | 5,000 USDC | 1.9871 WETH | 2,516.28 | 0.300% | 335,741 | [0x7c734134…854e103e](https://sepolia.worldscan.org/tx/0x7c734134b6f9c91ee27711c7259e60a7471fca32cc44d3a7d27c8b84854e103e) | filled |
+| 2 Human · ZK Aadhaar | Groth16 ✔ | 5,000 USDC | 1.9802 WETH | 2,525.05 | 0.150% | 586,720 | [0xf34c71cc…92774d15](https://sepolia.worldscan.org/tx/0xf34c71cc7ed35c3c6bb04bb4c9a22a50d3f66c28eaa08fb4e1d6304392774d15) | filled |
+| 3 Human · binding claim | binding ✔ | 5,000 USDC | 1.9703 WETH | 2,537.62 | 0.150% | 340,779 | [0xf1ee0be4…b450c40e](https://sepolia.worldscan.org/tx/0xf1ee0be4b8dfddcc93da7fc874ef8c6f0553840724c6b915005cbfe6b450c40e) | filled |
+| 4 Human · via aggregator | authorised ✔ | 5,000 USDC | 1.9559 WETH | 2,556.36 | 0.390% (0.150% base + 0.240% surge) | 633,155 | [0x76b251cd…d7000aa1](https://sepolia.worldscan.org/tx/0x76b251cdb3e3302ee5c2cd5c7af8042c771881e4618b5ed41f7d5d51d7000aa1) | filled |
+| 5 Human · World ID | World ID ✔ | 5,000 USDC | 1.9276 WETH | 2,593.96 | 1.350% (0.150% base + 1.200% surge) | 582,931 | [0xb4f7c8bb…fa5b91b1](https://sepolia.worldscan.org/tx/0xb4f7c8bb68393a17b3e3b1f370a4f65443381c8e0273be0845ecf35cfa5b91b1) | filled |
+| 6 Arb bot 50k | unverified | 50,000 USDC | 18.7431 WETH | 2,667.64 | 1.500% (0.300% base + 1.200% surge) | 335,754 | [0xb0d86038…7909ef37](https://sepolia.worldscan.org/tx/0xb0d86038ecf58895e7a0a58fe5e5007208a994b27a79329b5494c6d97909ef37) | filled |
+| 7 Split 5x10k | unverified | 50,000 USDC | 17.8653 WETH | 2,798.72 | 1.500% | 1,678,770 | [5 txs](https://sepolia.worldscan.org/tx/0x077084a6b3e2485ff9e5ee2e85eb977f4d7776f31905f9491a8cd18c17c8c6f0) | no gain |
+| 8 Whale 500k | unverified | 500,000 USDC | 0 WETH | — | — | 95,117 | [0x43f6e2be…97ab11c1](https://sepolia.worldscan.org/tx/0x43f6e2becbb8de52ca9ede86cf348c31579886f73e697429d5e4ac6797ab11c1) | blocked 0x9A |
+| 9 Whale split 4x25% | unverified | 4 txs | 88.2930 WETH | — | — | — | [4 txs](https://sepolia.worldscan.org/tx/0xb4b137416cffee361cc5d1ca3b9ba5c446496daf5fda8e6805ed9afca9346ef6) | 1 of 4 filled |
 <!-- /worldchainSepolia:deployment -->
 
 The live run above is `scripts/demo-sepolia.ts` on World Chain Sepolia with the Simulator's proof
 supplied as `IDKIT_RESULT=deployments/worldchainSepolia/idkit-result.json`. Scenario 5 is a
 5,000 USDC swap by the Verified Human taker whose World ID proof `WorldIDAdapter` verified through
-the chain's World ID Router: quote == swap, human-tier base fee, 582,213 gas against the 335,172
-proof-less baseline (World ID overhead 247,041, in line with the ~240k measured against the mock
-router). The other scenarios are the same code paths as on Sepolia. Deployment, verification and
-the run cost about 0.02 ETH of the 0.09 funded; the takers' swaps ran on their own 0.005 ETH.
+the chain's World ID Router: human-tier base fee, 582,931 gas against the 335,741 proof-less
+baseline (World ID overhead 247,190, in line with the ~240k measured against the mock router), and
+the same 1.927556 WETH out as the earlier run of the same sequence on the salt-0 order. One RPC
+artefact is worth knowing: the public endpoint answered scenario 5's pre-swap `quote()` from a
+replica that had not yet applied scenario 4's block, so the CLI printed that quote as "!= swap";
+every other scenario, and every quote the dashboard takes, matched to the wei. The other scenarios
+are the same code paths as on Sepolia. Deployment, verification, the redeploy and both runs cost
+about 0.02 ETH of the 0.09 funded; the takers' swaps ran on their own 0.005 ETH.
 
 **World ID through IDKit.** IDKit 4.x signs every request with the app's relying-party key, so the
 flow has a server side even for a demo:
@@ -664,21 +671,23 @@ flow has a server side even for a demo:
    `signal_hash` names (the dashboard signs for the Verified Human account), because the adapter
    binds the signal to the taker address and rejects the proof from any other account.
 
-**Hosted Simulator vs. the staging portal.** The hosted Simulator at `simulator.worldcoin.org`
-resolves app metadata from the *production* Developer Portal (`developer.world.org`; its
-`vercel.json` pins `NEXT_PUBLIC_DEV_PORTAL_URL` there). An app created in the staging portal
-(`staging-developer.world.org`, where this app lives) is unknown to it: the Simulator reports
-"App not found", and for an IDKit 4.x request with `environment: "staging"` it then reports
+**Two Developer Portals.** The hosted Simulator at `simulator.worldcoin.org` resolves app
+metadata from the Developer Portal at `developer.world.org` (its `vercel.json` pins
+`NEXT_PUBLIC_DEV_PORTAL_URL` there), so that is where the app for a Simulator-tested deployment has
+to be registered; the action is created on first use. An app created in the staging portal
+(`staging-developer.world.org`) works on-chain just the same, but the hosted Simulator cannot see
+it: it reports "App not found", and for an IDKit 4.x request with `environment: "staging"` then
 "Production request detected", because its `/api/v4/proof-context` lookup cannot reach the staging
-portal (the page's Content-Security-Policy only allows `developer.world.org`; the staging portal
-itself answers that call with CORS `*`). Two clean ways around it: register the app in
-`developer.world.org` and redeploy `WorldIDAdapter` with that app id
-(`WORLD_ID_APP_ID=app_… WORLD_ID_ROUTER=0x57f9…f611 REDEPLOY=worldIdAdapter ORDER_SALT=1 npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts`,
-then `scripts/ui-deployment.ts` again), or run the open-source Simulator locally with
-`NEXT_PUBLIC_DEV_PORTAL_URL=https://staging-developer.world.org`. The proof
-recorded above was produced by the hosted Simulator after the app metadata that the staging portal
-returns for this app was supplied to the Simulator's page state from the browser console; the test
-identity, the Semaphore proof, the bridge delivery and the on-chain verification are untouched.
+portal (the page's Content-Security-Policy only allows `developer.world.org`). The salt-0 order on
+these contracts was bound to such a staging-portal app; its run (in git history) needed the
+staging portal's app metadata supplied to the Simulator's page state from the browser console. The
+adapter was then redeployed for the `developer.world.org` app with
+`PRODUCTION_WORLD_ID_APP_ID=app_… FUND_TAKER_ETH=0.005 WORLD_ID_ROUTER=0x57f9…f611 REDEPLOY=worldIdAdapter ORDER_SALT=1 npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts`
+(then `scripts/ui-deployment.ts` again), and the run recorded above used the hosted Simulator
+unmodified. A local Simulator (`NEXT_PUBLIC_DEV_PORTAL_URL=https://staging-developer.world.org`) is
+the alternative for staging-portal apps. The prover holds both apps' RP credentials
+(`PRODUCTION_WORLD_ID_*` and `WORLD_ID_RP_*`) and signs each request with the set whose app id
+matches the deployment.
 
 Nothing else changes between the chains: signal binding, the Sybil policy, the nullifier binding
 with the 33-byte claim, the envelopes and the fee tier are the same code the Sepolia and local runs
@@ -689,8 +698,8 @@ Reproduce:
 ```bash
 # .env additionally: WORLD_ID_STAGING_APP_ID (Developer Portal), WORLD_ID_RP_ID + WORLD_ID_RP_SIGNING_KEY (IDKit request signing),
 #                    WORLDCHAIN_SEPOLIA_RPC_URL (optional; public endpoint by default)
-WORLD_ID_ROUTER=0x57f928158C3EE7CDad1e4D8642503c4D0201f611 \
-  npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts   # no mock router: the adapter gets the chain's World ID Router
+FUND_TAKER_ETH=0.005 WORLD_ID_ROUTER=0x57f928158C3EE7CDad1e4D8642503c4D0201f611 \
+  npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts   # no mock router: the adapter gets the chain's World ID Router; 0.005 ETH per taker is plenty here
 npx hardhat run --network worldchainSepolia scripts/verify-sepolia.ts      # Worldscan (Etherscan API V2, chainid 4801)
 npx hardhat run --network worldchainSepolia scripts/ui-deployment.ts       # read-only dashboard config
 npm --prefix packages/zk-aadhaar run prover:serve                          # Aadhaar prover + World ID request signing

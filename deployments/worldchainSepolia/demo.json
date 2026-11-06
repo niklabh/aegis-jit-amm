@@ -1,0 +1,128 @@
+{
+  "network": "worldchainSepolia",
+  "chainId": 4801,
+  "ranAt": "2026-11-06T13:12:42.202Z",
+  "orderHash": "0x10400be3efaf65d4022c6e0fc1430d2665535e146fd7c1ed730faf9ae171e9da",
+  "scenarios": [
+    {
+      "name": "0 Warm-up bot",
+      "taker": "unverified",
+      "inStr": "1,000 USDC",
+      "outStr": "0.3986 WETH",
+      "price": "2,508.77",
+      "fee": "0.300%",
+      "gas": "394485",
+      "tx": "0x23856b6f…088bcf03",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0x23856b6f0600f8d552a06ea906c79f794647085abb789fd93a9a5296088bcf03"
+    },
+    {
+      "name": "1 Bot 5k (baseline)",
+      "taker": "unverified",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9871 WETH",
+      "price": "2,516.28",
+      "fee": "0.300%",
+      "gas": "335741",
+      "tx": "0x7c734134…854e103e",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0x7c734134b6f9c91ee27711c7259e60a7471fca32cc44d3a7d27c8b84854e103e"
+    },
+    {
+      "name": "2 Human · ZK Aadhaar",
+      "taker": "Groth16 ✔",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9802 WETH",
+      "price": "2,525.05",
+      "fee": "0.150%",
+      "gas": "586720",
+      "tx": "0xf34c71cc…92774d15",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0xf34c71cc7ed35c3c6bb04bb4c9a22a50d3f66c28eaa08fb4e1d6304392774d15"
+    },
+    {
+      "name": "3 Human · binding claim",
+      "taker": "binding ✔",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9703 WETH",
+      "price": "2,537.62",
+      "fee": "0.150%",
+      "gas": "340779",
+      "tx": "0xf1ee0be4…b450c40e",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0xf1ee0be4b8dfddcc93da7fc874ef8c6f0553840724c6b915005cbfe6b450c40e"
+    },
+    {
+      "name": "4 Human · via aggregator",
+      "taker": "authorised ✔",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9559 WETH",
+      "price": "2,556.36",
+      "fee": "0.390% (0.150% base + 0.240% surge)",
+      "gas": "633155",
+      "tx": "0x76b251cd…d7000aa1",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0x76b251cdb3e3302ee5c2cd5c7af8042c771881e4618b5ed41f7d5d51d7000aa1"
+    },
+    {
+      "name": "5 Human · World ID",
+      "taker": "World ID ✔",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9276 WETH",
+      "price": "2,593.96",
+      "fee": "1.350% (0.150% base + 1.200% surge)",
+      "gas": "582931",
+      "tx": "0xb4f7c8bb…fa5b91b1",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0xb4f7c8bb68393a17b3e3b1f370a4f65443381c8e0273be0845ecf35cfa5b91b1"
+    },
+    {
+      "name": "6 Arb bot 50k",
+      "taker": "unverified",
+      "inStr": "50,000 USDC",
+      "outStr": "18.7431 WETH",
+      "price": "2,667.64",
+      "fee": "1.500% (0.300% base + 1.200% surge)",
+      "gas": "335754",
+      "tx": "0xb0d86038…7909ef37",
+      "status": "filled",
+      "link": "https://sepolia.worldscan.org/tx/0xb0d86038ecf58895e7a0a58fe5e5007208a994b27a79329b5494c6d97909ef37"
+    },
+    {
+      "name": "7 Split 5x10k",
+      "taker": "unverified",
+      "inStr": "50,000 USDC",
+      "outStr": "17.8653 WETH",
+      "price": "2,798.72",
+      "fee": "1.500%",
+      "gas": "1678770",
+      "tx": "5 txs",
+      "status": "no gain",
+      "link": "https://sepolia.worldscan.org/tx/0x077084a6b3e2485ff9e5ee2e85eb977f4d7776f31905f9491a8cd18c17c8c6f0"
+    },
+    {
+      "name": "8 Whale 500k",
+      "taker": "unverified",
+      "inStr": "500,000 USDC",
+      "outStr": "0 WETH",
+      "price": "—",
+      "fee": "—",
+      "gas": "95117",
+      "tx": "0x43f6e2be…97ab11c1",
+      "status": "blocked 0x9A",
+      "link": "https://sepolia.worldscan.org/tx/0x43f6e2becbb8de52ca9ede86cf348c31579886f73e697429d5e4ac6797ab11c1"
+    },
+    {
+      "name": "9 Whale split 4x25%",
+      "taker": "unverified",
+      "inStr": "4 txs",
+      "outStr": "88.2930 WETH",
+      "price": "—",
+      "fee": "—",
+      "gas": "—",
+      "tx": "4 txs",
+      "status": "1 of 4 filled",
+      "link": "https://sepolia.worldscan.org/tx/0xb4b137416cffee361cc5d1ca3b9ba5c446496daf5fda8e6805ed9afca9346ef6"
+    }
+  ]
+}

@@ -68,6 +68,23 @@ async function main() {
     useTransferFromAndAquaPush: true, threshold: o.threshold, instructionsArgs: o.zk,
   });
   const latestTs = async () => BigInt((await ethers.provider.getBlock("latest"))!.timestamp);
+  // Public RPC endpoints are load-balanced and a replica can lag a block behind the receipt we just waited for, which
+  // would make a quote or a balance read describe the state before the previous swap. Every read is therefore pinned
+  // to the block of the latest receipt (retrying briefly if a replica has not seen that block yet).
+  let pinnedBlock: number | undefined;
+  const pinTo = (rc: any) => { if (rc?.blockNumber && (!pinnedBlock || rc.blockNumber > pinnedBlock)) pinnedBlock = rc.blockNumber; };
+  const origCall = ethers.provider.call.bind(ethers.provider);
+  const origBalance = ethers.provider.getBalance.bind(ethers.provider);
+  const withPin = async <T>(fn: () => Promise<T>): Promise<T> => {
+    for (let i = 0; ; i++) {
+      try { return await fn(); } catch (e: any) {
+        if (i < 6 && pinnedBlock && /header not found|unknown block|block not found|missing trie node|not available/i.test(String(e?.message ?? e))) { await sleep(2_000); continue; }
+        throw e;
+      }
+    }
+  };
+  (ethers.provider as any).call = (tx: any) => withPin(() => origCall(tx?.blockTag == null && pinnedBlock ? { ...tx, blockTag: pinnedBlock } : tx));
+  (ethers.provider as any).getBalance = (addr: any, blockTag?: any) => withPin(() => origBalance(addr, blockTag ?? pinnedBlock));
   async function quote(signer: any, amount: bigint, data: string): Promise<{ amountIn: bigint; amountOut: bigint }> {
     const [amountIn, amountOut] = await router.connect(signer).quote.staticCall(order, amount, data);
     return { amountIn: amountIn as bigint, amountOut: amountOut as bigint };
@@ -78,7 +95,7 @@ async function main() {
   }
   async function swap(signer: any, amount: bigint, data: string) {
     const tx = await router.connect(signer).swap(order, amount, data);
-    const rc = await tx.wait();
+    const rc = await tx.wait(); pinTo(rc);
     const ev = rc.logs.map((l: any) => { try { return router.interface.parseLog(l); } catch { return null; } }).find((e: any) => e?.name === "Swapped");
     console.log(`  ${C.dim}tx ${txLink(chainId, rc.hash)}  gas ${rc.gasUsed}${C.reset}`);
     return { amountIn: ev.args.amountIn as bigint, amountOut: ev.args.amountOut as bigint, rc };
@@ -104,9 +121,10 @@ async function main() {
       hash = tx.hash;
       try { rc = await tx.wait(); } catch (e: any) { rc = e.receipt ?? null; }
       for (let i = 0; i < 20 && !rc; i++) { rc = await ethers.provider.getTransactionReceipt(hash); if (!rc) await sleep(3000); }
+      pinTo(rc);
     } catch (e: any) {
       hash = findTxHash(e); // Hardhat node: "VM Exception while processing transaction" at submission; the tx may still be mined
-      if (hash) rc = await ethers.provider.getTransactionReceipt(hash);
+      if (hash) { rc = await ethers.provider.getTransactionReceipt(hash); pinTo(rc); }
     }
     console.log(`  ${C.dim}tx ${hash ? txLink(chainId, hash) : "(rejected at submission by the local node)"}  status ${rc?.status ?? "—"}  gas ${rc?.gasUsed ?? "—"}${C.reset}`);
     return { decoded, rc, hash };
@@ -269,7 +287,7 @@ async function main() {
   const fee4 = await feeBreakdown(AMT, true);
   const wethBefore: bigint = await weth.balanceOf(human.address);
   const tx4 = await forwarder.connect(human).swapExactIn(order, usdcAddr, AMT, fwdData);
-  const rc4 = await tx4.wait();
+  const rc4 = await tx4.wait(); pinTo(rc4);
   const ev4 = rc4.logs.map((l: any) => { try { return router.interface.parseLog(l); } catch { return null; } }).find((e: any) => e?.name === "Swapped");
   const out4: bigint = ev4.args.amountOut;
   console.log(`  ${C.dim}tx ${txLink(chainId, rc4.hash)}  gas ${rc4.gasUsed}${C.reset}`);
@@ -318,7 +336,7 @@ async function main() {
     const p = await generateWorldIdProof({ identity: "human", signal: worldHuman.address, externalNullifier: await worldIdAdapter.currentExternalNullifier(), epoch: await worldIdAdapter.currentEpoch() });
     process.stdout.write(` done (${p.provingMs} ms)\n`);
     if ((await worldIdRouter.latestRoot()) !== BigInt(p.root)) {
-      const rtx = await worldIdRouter.connect(deployer).registerRoot(BigInt(p.root)); const rrc = await rtx.wait();
+      const rtx = await worldIdRouter.connect(deployer).registerRoot(BigInt(p.root)); const rrc = await rtx.wait(); pinTo(rrc);
       console.log(`  ${C.dim}sequencer published the tree root: ${txLink(chainId, rrc.hash)}${C.reset}`);
     }
     wp = p; proofLabel = `REAL Semaphore Groth16 · ${p.provingMs} ms`;
