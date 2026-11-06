@@ -74,7 +74,9 @@ library JITVaultReservesArgsBuilder {
 
 /// @title JITVaultReserves — opcode 0x9A
 /// @notice Self-custodial just-in-time liquidity sizing.
-///         * Reads the Maker's live ERC-4626 backing for `tokenOut` (STATICCALL only).
+///         * Reads the Maker's live ERC-4626 backing for `tokenOut` (STATICCALL only) through
+///           `maxWithdraw(maker)`: what the Maker can redeem right now, including any vault-level
+///           liquidity limit, so `quote()` never promises what `preTransferOut` cannot withdraw.
 ///         * Caps the output of any single execution at `lambdaBps` of that backing
 ///           (and at the Aqua-tracked balance, which is what can actually be pulled).
 ///         * Concentrates liquidity by `virtualBoostBps` (>= 1.0x) using CONSTANT virtual offsets
@@ -112,7 +114,8 @@ abstract contract JITVaultReserves {
         uint256 rawOut = ctx.swap.balanceOut;
         if (p.vaultOut != address(0)) {
             _requireVaultAsset(p.vaultOut, ctx.query.tokenOut);
-            rawOut = IERC4626(p.vaultOut).convertToAssets(IERC4626(p.vaultOut).balanceOf(ctx.query.maker));
+            // maxWithdraw = convertToAssets(balanceOf(maker)) for a plain vault, less for an illiquid one
+            rawOut = IERC4626(p.vaultOut).maxWithdraw(ctx.query.maker);
         }
 
         // Never more than λ of the live underlying, never more than Aqua can actually pull

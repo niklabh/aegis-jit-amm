@@ -6,15 +6,25 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC4626 } from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title MockERC4626Vault
 /// @notice Standard OpenZeppelin ERC-4626 yield vault used as the Maker's self-custodial reserve
 ///         (e.g. a Circle USDC savings vault). `accrueYield` simulates strategy returns by
 ///         donating underlying, which raises `convertToAssets` for every share holder.
+/// @dev Test knobs (not part of a production vault):
+///      * `setWithdrawLiquidityCap` models a lending vault whose underlying is lent out, so
+///        `maxWithdraw` (and `withdraw`) are limited by available liquidity;
+///      * `setDepositCap` models a supply cap: `maxDeposit` (and `deposit`) stop at `totalAssets == cap`.
+///      Both go through OpenZeppelin's own `maxWithdraw` / `maxDeposit` checks, so the vault
+///      reverts exactly like a real capped vault would.
 contract MockERC4626Vault is ERC4626 {
     using SafeERC20 for IERC20;
 
     event YieldAccrued(uint256 assets);
+
+    uint256 public withdrawLiquidityCap = type(uint256).max;
+    uint256 public depositCap = type(uint256).max;
 
     constructor(IERC20Metadata asset_, string memory name_, string memory symbol_)
         ERC20(name_, symbol_)
@@ -25,5 +35,32 @@ contract MockERC4626Vault is ERC4626 {
     function accrueYield(uint256 assets) external {
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
         emit YieldAccrued(assets);
+    }
+
+    /// @notice Test knob: at most `cap` assets can be withdrawn by anyone until it is raised again
+    function setWithdrawLiquidityCap(uint256 cap) external {
+        withdrawLiquidityCap = cap;
+    }
+
+    /// @notice Test knob: deposits stop once `totalAssets()` reaches `cap`
+    function setDepositCap(uint256 cap) external {
+        depositCap = cap;
+    }
+
+    function maxWithdraw(address owner) public view override returns (uint256) {
+        return Math.min(super.maxWithdraw(owner), withdrawLiquidityCap);
+    }
+
+    function maxRedeem(address owner) public view override returns (uint256) {
+        return Math.min(super.maxRedeem(owner), _convertToShares(withdrawLiquidityCap, Math.Rounding.Floor));
+    }
+
+    function maxDeposit(address) public view override returns (uint256) {
+        uint256 total = totalAssets();
+        return depositCap > total ? depositCap - total : 0;
+    }
+
+    function maxMint(address receiver) public view override returns (uint256) {
+        return _convertToShares(maxDeposit(receiver), Math.Rounding.Floor);
     }
 }

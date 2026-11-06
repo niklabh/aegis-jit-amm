@@ -402,6 +402,33 @@ describe("AegisJIT", function () {
       expect(await wethVault.balanceOf(env.addr.maker)).to.be.gt(0n);
     });
 
+    it("0x9A sizes the cap from ERC-4626 maxWithdraw: an illiquid vault lowers quote and swap together (no divergence)", async function () {
+      const env = await loadFixture(baseFixture);
+      const { router, wethVault } = env.contracts;
+      const bot = env.accounts.bot;
+      // The lending vault has lent most of the WETH out: only 60 WETH is withdrawable right now
+      await wethVault.setWithdrawLiquidityCap(WETH(60));
+      expect(await wethVault.maxWithdraw(env.addr.maker)).to.equal(WETH(60));
+      expect(await wethVault.convertToAssets(await wethVault.balanceOf(env.addr.maker))).to.equal(WETH(400)); // position itself unchanged
+      const data = env.takerData({ tokenIn: env.addr.usdc, exactIn: false });
+      // cap = 25% of the WITHDRAWABLE backing (15 WETH). Sizing from the position (100 WETH) would quote fine and revert in the hook.
+      await expect(env.quote(bot, WETH(16), data)).to.be.revertedWithCustomError(router, "JITExposureCapExceeded").withArgs(WETH(16), WETH(15));
+      const q = await env.quote(bot, WETH(15), data);
+      const s = await env.swap(bot, WETH(15), data);
+      expect([s.amountIn, s.amountOut]).to.deep.equal([q.amountIn, q.amountOut]);
+    });
+
+    it("the JIT hook never fails settlement when the yield vault is at its deposit cap (tokens stay in the Maker wallet)", async function () {
+      const env = await loadFixture(baseFixture);
+      const { usdc, usdcVault, hook } = env.contracts;
+      await usdcVault.setDepositCap((await usdcVault.totalAssets()) + USDC(10_000)); // room for 10k only
+      const s = await env.swap(env.accounts.bot, USDC(50_000), env.takerData({ tokenIn: env.addr.usdc }));
+      await expect(s.tx).to.emit(hook, "JITDepositSkipped").withArgs(env.addr.maker, env.addr.usdcVault, USDC(50_000));
+      expect(await usdc.balanceOf(env.addr.maker)).to.equal(USDC(50_000)); // still the Maker's, just not in the vault
+      expect(s.amountOut).to.be.gt(0n);
+      expect((await env.aquaBalances()).usdc).to.equal(USDC(1_050_000)); // Aqua book unaffected
+    });
+
     it("the JIT hook only accepts calls from the router", async function () {
       const env = await loadFixture(baseFixture);
       const { hook } = env.contracts;

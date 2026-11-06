@@ -16,6 +16,12 @@ import { IMakerHooks } from "@1inch/swap-vm/src/interfaces/IMakerHooks.sol";
 ///      vault position — never to a third party. It needs the Maker's allowances on vault
 ///      shares (withdraw) and on the underlying tokens (deposit). `makerData` is
 ///      `abi.encodePacked(vaultA, vaultB)` (either may be zero = token not vault-backed).
+///
+///      Settlement never fails because the yield vault will not take a deposit: if the vault's
+///      `maxDeposit` is below `amountIn`, or `deposit` reverts (supply cap, pause, ...), the
+///      tokens stay in the Maker's wallet and `JITDepositSkipped` is emitted. The withdraw side
+///      needs no such fallback: opcode 0x9A sizes every execution from `maxWithdraw(maker)`, so
+///      `quote()` already rejects what `withdraw` could not deliver.
 contract AegisJITVaultHook is IMakerHooks {
     using SafeERC20 for IERC20;
 
@@ -26,6 +32,8 @@ contract AegisJITVaultHook is IMakerHooks {
 
     event JITWithdraw(address indexed maker, address indexed vault, uint256 assets);
     event JITDeposit(address indexed maker, address indexed vault, uint256 assets);
+    /// @notice The vault refused the re-deposit; `assets` stay in the Maker's wallet
+    event JITDepositSkipped(address indexed maker, address indexed vault, uint256 assets);
 
     modifier onlyRouter() {
         require(msg.sender == ROUTER, OnlyRouter(msg.sender));
@@ -52,10 +60,20 @@ contract AegisJITVaultHook is IMakerHooks {
         address vault = _vaultFor(tokenIn, makerData);
         if (vault == address(0) || amountIn == 0) return;
 
+        if (IERC4626(vault).maxDeposit(maker) < amountIn) {
+            emit JITDepositSkipped(maker, vault, amountIn);
+            return;
+        }
+
         IERC20(tokenIn).safeTransferFrom(maker, address(this), amountIn);
         IERC20(tokenIn).forceApprove(vault, amountIn);
-        IERC4626(vault).deposit(amountIn, maker);
-        emit JITDeposit(maker, vault, amountIn);
+        try IERC4626(vault).deposit(amountIn, maker) returns (uint256) {
+            emit JITDeposit(maker, vault, amountIn);
+        } catch {
+            IERC20(tokenIn).forceApprove(vault, 0);
+            IERC20(tokenIn).safeTransfer(maker, amountIn);
+            emit JITDepositSkipped(maker, vault, amountIn);
+        }
     }
 
     function preTransferOut(
