@@ -67,3 +67,7 @@ deployments/*/aegis.partial.json
 
 # local presenter notes (not part of the submission)
 docs/DEMO.md
+
+# wrangler (hosted dashboard, see wrangler.toml)
+.wrangler/
+.dev.vars

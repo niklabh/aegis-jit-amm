@@ -430,7 +430,7 @@ the UI.
 - `cd ui && npm run smoke:public` runs the read-only checks against a public deployment
   (`scripts/ui-deployment.ts`): live order, quotes per tier, fee mirror, 0x9A cap, the
   read-only guards and the adapter's wiring to the chain's World ID Router.
-- **Hosted copy** at <https://aegis-jit.niklabh811.workers.dev>: `ui/worker/index.ts` + `ui/wrangler.toml` deploy the
+- **Hosted copy** at <https://aegis-jit.niklabh811.workers.dev>: `ui/worker/index.ts` + `wrangler.toml` deploy the
   Vite build as Cloudflare Worker static assets, and the Worker serves the two prover endpoints the public page
   needs, `GET /health` and `POST /worldid/rp-context`, signing IDKit requests with the app's relying-party key
   held as a Worker secret (`PRODUCTION_WORLD_ID_RP_ID`, `PRODUCTION_WORLD_ID_RP_SIGNING_KEY`; the app id is a

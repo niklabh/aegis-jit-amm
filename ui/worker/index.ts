@@ -5,7 +5,7 @@
 //   POST /worldid/rp-context  -> IDKit `rp_context`, signed with the app's relying-party key. The key is a Worker
 //                                secret: it never reaches the browser, exactly like the local prover process.
 // Anon Aadhaar proving stays on the user's machine (620 MB of artifacts, GBs of RAM): the hosted page says so.
-//   vars:    PRODUCTION_WORLD_ID_APP_ID                                   (wrangler.toml)
+//   vars:    PRODUCTION_WORLD_ID_APP_ID                                   (wrangler.toml at the repo root)
 //   secrets: PRODUCTION_WORLD_ID_RP_ID, PRODUCTION_WORLD_ID_RP_SIGNING_KEY  (wrangler secret put …)
 import { signRequest } from "@worldcoin/idkit-server";
 

@@ -4,4 +4,3 @@ public/deployment.json
 public/wasm/
 public/semaphore/
 .wrangler/
-.dev.vars

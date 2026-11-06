@@ -1,13 +1,14 @@
-# Hosted dashboard: Cloudflare Worker (worker/index.ts) + the Vite build as static assets.
-#   npm run deploy                                        # vite build -> wrangler deploy
+# Hosted dashboard: Cloudflare Worker (ui/worker/index.ts) + the Vite build (ui/dist) as static assets.
+# Lives at the repo root so that any wrangler command, run from the root or from ui/, targets this Worker.
+#   npm --prefix ui run deploy                            # vite build -> wrangler deploy
 #   wrangler secret put PRODUCTION_WORLD_ID_RP_ID          # relying-party id of the developer.world.org app
 #   wrangler secret put PRODUCTION_WORLD_ID_RP_SIGNING_KEY # its signing key; stays in Cloudflare, never in the bundle
 name = "aegis-jit"
-main = "worker/index.ts"
+main = "ui/worker/index.ts"
 compatibility_date = "2026-01-01"
 
 [assets]
-directory = "./dist"
+directory = "./ui/dist"
 binding = "ASSETS"
 run_worker_first = ["/health", "/worldid/*"]
 
