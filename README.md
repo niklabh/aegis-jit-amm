@@ -440,6 +440,116 @@ For each filled swap the demo prints the decoded ERC-20 `Transfer` trace: vault 
 WETH out of the vault → `Aqua.pull` to the taker → taker USDC → router → `Aqua.push` to the
 Maker → hook → vault deposit and share mint.
 
+## Live on Sepolia
+
+The complete demo stack is deployed on Ethereum Sepolia and the judge scenarios were executed
+there. Every address and transaction below is on Etherscan. The machine-readable records are
+committed under [`deployments/sepolia/`](deployments/sepolia/): `aegis.json` (deployment, order,
+parameters) and `demo.json` (the live run).
+
+<!-- sepolia:deployment -->
+Deployed 2026-11-06 on sepolia (chainId 11155111) by [`0x467071F2ee89347354ee91105d8dbA129D1c8eE6`](https://sepolia.etherscan.io/address/0x467071F2ee89347354ee91105d8dbA129D1c8eE6), who is also the Maker.
+
+| Contract | Address | Deploy tx |
+|---|---|---|
+| Aqua (1inch shared liquidity layer) | [`0x9eF466A272b7977851c711148623eCaFCeF2B576`](https://sepolia.etherscan.io/address/0x9eF466A272b7977851c711148623eCaFCeF2B576) | [`0x75e4019f…78f553`](https://sepolia.etherscan.io/tx/0x75e4019f609b6f88d124c6294b56f30c91978ee955ffbfe444f5cae10478f553) |
+| USDC mock (6 dp, mintable) | [`0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c`](https://sepolia.etherscan.io/address/0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c) | [`0x21fc701a…aedb6c`](https://sepolia.etherscan.io/tx/0x21fc701ab35daa97b10c4498f5c8a4ad2a791a7bada18187676f96124eaedb6c) |
+| WETH mock (18 dp, mintable) | [`0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535`](https://sepolia.etherscan.io/address/0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535) | [`0x24df3275…b824e3`](https://sepolia.etherscan.io/tx/0x24df3275a2c4bf15d4aae296f2cba6da697dd072d5b86cde1d0d497ea2b824e3) |
+| AegisSwapVMRouter (SwapVM + 0x2A / 0x9A / 0x7A) | [`0xd3b9B73806086AfD0C736EBD36470856E098A917`](https://sepolia.etherscan.io/address/0xd3b9B73806086AfD0C736EBD36470856E098A917) | [`0x28e0b684…87dcbd`](https://sepolia.etherscan.io/tx/0x28e0b684260c131f6df964fd5c6bf45f24a955abc6c4484cf4ded154f387dcbd) |
+| AegisJITVaultHook (JIT withdraw / re-deposit) | [`0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC`](https://sepolia.etherscan.io/address/0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC) | [`0x28bda284…cb7681`](https://sepolia.etherscan.io/tx/0x28bda284970e534713ecace6b1b4399a83c7d9c35b345c849f4af7001dcb7681) |
+| AegisJITStrategy (on-chain order builder) | [`0x10dAae3dFf736978568fBAD6feF24F99C732a11D`](https://sepolia.etherscan.io/address/0x10dAae3dFf736978568fBAD6feF24F99C732a11D) | [`0x4676996d…87b8f0`](https://sepolia.etherscan.io/tx/0x4676996dc6c0f6588e7a6a383107860f9adb55808920c5d9f39938730687b8f0) |
+| AegisZKForwarder (reference aggregator) | [`0xB39bf2c69106FfAAA60F0Bc35139CB6207FC8FC3`](https://sepolia.etherscan.io/address/0xB39bf2c69106FfAAA60F0Bc35139CB6207FC8FC3) | [`0xa9d5a9e8…937f31`](https://sepolia.etherscan.io/tx/0xa9d5a9e8bc163ac2f076a1eba36dbf8eb63fa64914ddc99b3ff0574498937f31) |
+| avUSDC MockERC4626Vault | [`0xffDe80F6EE5db69807F4E244AD622686354c5eB1`](https://sepolia.etherscan.io/address/0xffDe80F6EE5db69807F4E244AD622686354c5eB1) | [`0x210ddcb9…fb7a5c`](https://sepolia.etherscan.io/tx/0x210ddcb911dc565ec697be7944503f868abf8db39fe6a879c50ab1591afb7a5c) |
+| avWETH MockERC4626Vault | [`0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261`](https://sepolia.etherscan.io/address/0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261) | [`0x3d3dd152…65903f`](https://sepolia.etherscan.io/tx/0x3d3dd1524433afb8315e66ce454180e3282e3338b864a21181e6b3e18165903f) |
+| Anon Aadhaar v2 Groth16 verifier (vendored snarkjs, ecPairing) | [`0xbF1C48baC951E1D5429b27017585A4a920C29CCb`](https://sepolia.etherscan.io/address/0xbF1C48baC951E1D5429b27017585A4a920C29CCb) | [`0xec6ced5c…e77dca`](https://sepolia.etherscan.io/tx/0xec6ced5c6a686754f4e9166fa690d82a6c5818b44c8a55102e3eb122a8e77dca) |
+| AnonAadhaarGroth16Verifier (UIDAI key set; test signer here) | [`0x100d5447596FF130Eb4813BA740f315cF9948d3F`](https://sepolia.etherscan.io/address/0x100d5447596FF130Eb4813BA740f315cF9948d3F) | [`0xe702fb19…91b167`](https://sepolia.etherscan.io/tx/0xe702fb19ce73425e5e3d91e465735ee0c4f2f64ac33c6aff7e8c719b6691b167) |
+| AnonAadhaarAdapter (0x2A type 2) | [`0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc`](https://sepolia.etherscan.io/address/0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc) | [`0x40408771…b8cabf`](https://sepolia.etherscan.io/tx/0x40408771a1f3a5adff5f0e69096d9f79027b65a48f52e560cdb5efd3f3b8cabf) |
+| World ID SemaphoreVerifier (vendored, real pairing) | [`0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882`](https://sepolia.etherscan.io/address/0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882) | [`0x19e23a74…493882`](https://sepolia.etherscan.io/tx/0x19e23a745b2fb0f90a921d3e3f87b44101fc6de7487578cc264efd5c5d493882) |
+| MockWorldIDRouter (router + identity-manager semantics) | [`0x08b72330f18Db923e66A7912658b85B9Aaa87b6B`](https://sepolia.etherscan.io/address/0x08b72330f18Db923e66A7912658b85B9Aaa87b6B) | [`0x9207242f…a58695`](https://sepolia.etherscan.io/tx/0x9207242f18f4012311ea6a79d6f234655fe6e31919547acc6cf64a4610a58695) |
+| WorldIDAdapter (0x2A type 1) | [`0x17cC2A95F0d9B75eF3Df1dcfE7Dbd04bdc209A59`](https://sepolia.etherscan.io/address/0x17cC2A95F0d9B75eF3Df1dcfE7Dbd04bdc209A59) | [`0x205d2670…c275cd`](https://sepolia.etherscan.io/tx/0x205d2670fe885836cf5f7bcd6f1443dd34e58c916ff9edb987d186bdd3c275cd) |
+
+| Strategy | |
+|---|---|
+| orderHash | `0xf6d915b75f75797d743648038da21bd8bdb084de5bfdddefaedd73f0a5928b99` |
+| Aqua.ship tx | [`0xa402cc73…34c115`](https://sepolia.etherscan.io/tx/0xa402cc734d224671e42793af6ef1969278ccc7ba2ca1be46042ff6c17734c115) (block 12076059) |
+| Maker capital | 1,000,000 USDC + 400 WETH in the two vaults; Aqua book = the same, as virtual balances |
+| λ / boost / windows | 25% per execution and per 600s window / 2x / 600s fee bucket |
+| fees | base 0.3% (humans 0.15%), surge marginal 1.5% above 1% utilisation |
+| Aadhaar epochs | 24 h, grace 600 s, QR freshness 30 days |
+
+Taker accounts used by the live run:
+
+| Role | Address |
+|---|---|
+| human | [`0xb47Fc63033Db7C92964aC2DB3Ec120A8605e8073`](https://sepolia.etherscan.io/address/0xb47Fc63033Db7C92964aC2DB3Ec120A8605e8073) |
+| bot | [`0xbF0df288Cb85e83158d98dCA7C513FDf3d5Bee84`](https://sepolia.etherscan.io/address/0xbF0df288Cb85e83158d98dCA7C513FDf3d5Bee84) |
+| whale | [`0xd115abbd24D26308af7501f6644eF22357026f3A`](https://sepolia.etherscan.io/address/0xd115abbd24D26308af7501f6644eF22357026f3A) |
+| worldHuman | [`0x7ae898883b91534923737A792aAC3973CE5028F6`](https://sepolia.etherscan.io/address/0x7ae898883b91534923737A792aAC3973CE5028F6) |
+
+- USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).
+- MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.
+- World ID: MockWorldIDRouter (router + identity-manager semantics) in front of World ID's real SemaphoreVerifier; identity tree = packages/world-id local tree.
+- ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.
+- Order deadline: 30 days after deployment.
+
+Live run of `scripts/demo-sepolia.ts` on 2026-11-06:
+
+| Scenario | Taker | In | Out | USDC/WETH | Fee | Gas | Tx | Result |
+|---|---|---|---|---|---|---|---|---|
+| 0 Warm-up bot | unverified | 1,000 USDC | 0.3986 WETH | 2,508.77 | 0.300% | 794,386 | [0xc1d7a8bc…c1bc2a2c](https://sepolia.etherscan.io/tx/0xc1d7a8bcd1c9e6397a5e3a506ca855c332261a967d2ce57e4fa70fbcc1bc2a2c) | filled |
+| 1 Bot 5k (baseline) | unverified | 5,000 USDC | 1.9871 WETH | 2,516.28 | 0.300% | 383,476 | [0xfb0c04c3…7cc82b11](https://sepolia.etherscan.io/tx/0xfb0c04c35588911020ba01b8d54657d492a80be4db26c3bc5d0f6a3b7cc82b11) | filled |
+| 2 Human · ZK Aadhaar | Groth16 ✔ | 5,000 USDC | 1.9802 WETH | 2,525.05 | 0.150% | 671,244 | [0x11e169f0…ed198bcf](https://sepolia.etherscan.io/tx/0x11e169f08c75a809e773803c206e3a0349480cadf6096110a4ea7abced198bcf) | filled |
+| 3 Human · binding claim | binding ✔ | 5,000 USDC | 1.9703 WETH | 2,537.62 | 0.150% | 390,273 | [0x4919f261…1e154066](https://sepolia.etherscan.io/tx/0x4919f2612420af53c310db1aaaf3dd95ff48ba07e6b2600f47bb72621e154066) | filled |
+| 4 Human · via aggregator | authorised ✔ | 5,000 USDC | 1.9559 WETH | 2,556.36 | 0.390% (0.150% base + 0.240% surge) | 717,279 | [0xd31a637f…c4b3d3a5](https://sepolia.etherscan.io/tx/0xd31a637f663a06a238edb673e5b01996590114ceae26cec1e1723c5ac4b3d3a5) | filled |
+| 5 Human · World ID | Semaphore ✔ | 5,000 USDC | 1.9276 WETH | 2,593.96 | 1.350% (0.150% base + 1.200% surge) | 623,467 | [0x061c30a4…8dbe2728](https://sepolia.etherscan.io/tx/0x061c30a4487bafaa3310cf9e14c853d63dc64cfcb25013562d2fa2f18dbe2728) | filled |
+| 6 Arb bot 50k | unverified | 50,000 USDC | 18.7431 WETH | 2,667.64 | 1.500% | 383,492 | [0x534a8ec7…9d1c8e27](https://sepolia.etherscan.io/tx/0x534a8ec7ecd7e317715f6e5fafd7843b30496b4c2756f5db411b39849d1c8e27) | filled |
+| 7 Split 5x10k | unverified | 50,000 USDC | 17.8653 WETH | 2,798.72 | 1.500% | 1,917,460 | [5 txs](https://sepolia.etherscan.io/tx/0x28d32e57ccd02d3b273c154d2908ad41d6b8e69f1096d0dc9c58da13cf54f67e) | no gain |
+| 8 Whale 500k | unverified | 500,000 USDC | 0 WETH | — | — | 97,917 | [0x09bf4f67…00f26898](https://sepolia.etherscan.io/tx/0x09bf4f670cf2e8cf91b219f1680eeb6817ccabecd1180bd5648b9dad00f26898) | blocked 0x9A |
+| 9 Whale split 4x25% | unverified | 4 txs | 88.2930 WETH | — | — | — | [4 txs](https://sepolia.etherscan.io/tx/0x92aebe9c77ff9d3648b858654b6156122f482450d9984a4d0c0d5c30e7d47599) | 1 of 4 filled |
+<!-- /sepolia:deployment -->
+
+**What is real and what is a mock here.** Real: Aqua, `AegisSwapVMRouter` with the three opcodes,
+the JIT hook, both `IZKVerifier` adapters, the reference aggregator, the Anon Aadhaar v2 Groth16
+verifier (vendored snarkjs, BN254 pairing) and World ID's `SemaphoreVerifier`. Mock, by design:
+USDC and WETH are mintable ERC-20s (a 1,000,000 USDC / 400 WETH book cannot be funded from
+faucets), the vaults are OpenZeppelin ERC-4626 mocks, `MockWorldIDRouter` plays the World ID Router
+and identity manager in front of World ID's real verifier with the project's local identity tree,
+and the Aadhaar trust root is the public AegisJIT test signer. Anyone with this repo can therefore
+mint a valid *test* QR against this deployment: it demonstrates the pipeline end to end, not
+UIDAI-backed identity.
+
+All 15 contracts are source-verified on Etherscan. This is the second order shipped on these
+contracts (salt 1); the first one (salt 0, listed under `previousOrders` in `aegis.json`) served an
+interrupted run and is still active but unused. Fees for everything on this page, the deployment,
+both runs and verification across 90 transactions, came to 0.134 ETH; Sepolia's base fee was near zero throughout.
+
+**Reading the fee column.** The 0x7A flow bucket integrates every trade on the order, human or
+bot. By scenario 4 the earlier trades had put 16,000 USDC into it, and by scenario 5 21,000, past
+the 1% threshold of 20,000 USDC, so those two verified-human trades pay surge on the excess while
+still getting the halved base fee; the bot in scenario 6 pays surge on all of its 50,000 USDC. That
+is the designed behaviour: the identity tier discounts the base fee, the surge prices flow.
+
+**Gas.** The gas column comes from the Sepolia receipts of this run and sits slightly above the
+Hardhat (cancun) figures used elsewhere in this README: a proof-less 5,000 USDC swap costs 383k
+here against 335k locally; the Groth16 proof adds 288k, the binding claim 6.8k, the World ID proof
+240k. Scenario 0 pays about 400k extra for the cold storage slots of the fee and budget buckets.
+
+Reproduce on a fresh account (resumable, about 45 transactions):
+
+```bash
+# .env: PRIVATE_KEY (funded Sepolia account), SEPOLIA_RPC_URL, ETHERSCAN_API_KEY (optional);
+#       TAKER_MNEMONIC for the four taker accounts is generated and appended on the first run
+node packages/zk-aadhaar/prover/fetch-artifacts.mjs && node packages/world-id/prover/fetch-artifacts.mjs
+npx hardhat run --network sepolia scripts/deploy-sepolia.ts     # deploy + seed + ship; checkpoints, re-run to resume
+npx hardhat run --network sepolia scripts/verify-sepolia.ts     # Etherscan source verification
+npx hardhat run --network sepolia scripts/demo-sepolia.ts       # the scenarios above with real proofs; writes demo.json
+npx hardhat run --network sepolia scripts/deployment-readme.ts  # renders this section's tables
+```
+
+Judges can also call the deployment directly: `router.asView().quote(order, amount, takerData)`
+with the `order` from `aegis.json` and `takerData` built by `src/aegisProgramBuilder.ts`, or read the
+live buckets with `router.surgeWindow(orderHash, usdc)` and `router.exposureWindow(orderHash, weth)`.
+
 ## Project structure
 
 ```

@@ -1,0 +1,128 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "ranAt": "2026-11-06T10:58:37.924Z",
+  "orderHash": "0xf6d915b75f75797d743648038da21bd8bdb084de5bfdddefaedd73f0a5928b99",
+  "scenarios": [
+    {
+      "name": "0 Warm-up bot",
+      "taker": "unverified",
+      "inStr": "1,000 USDC",
+      "outStr": "0.3986 WETH",
+      "price": "2,508.77",
+      "fee": "0.300%",
+      "gas": "794386",
+      "tx": "0xc1d7a8bc\u2026c1bc2a2c",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0xc1d7a8bcd1c9e6397a5e3a506ca855c332261a967d2ce57e4fa70fbcc1bc2a2c"
+    },
+    {
+      "name": "1 Bot 5k (baseline)",
+      "taker": "unverified",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9871 WETH",
+      "price": "2,516.28",
+      "fee": "0.300%",
+      "gas": "383476",
+      "tx": "0xfb0c04c3\u20267cc82b11",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0xfb0c04c35588911020ba01b8d54657d492a80be4db26c3bc5d0f6a3b7cc82b11"
+    },
+    {
+      "name": "2 Human \u00b7 ZK Aadhaar",
+      "taker": "Groth16 \u2714",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9802 WETH",
+      "price": "2,525.05",
+      "fee": "0.150%",
+      "gas": "671244",
+      "tx": "0x11e169f0\u2026ed198bcf",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0x11e169f08c75a809e773803c206e3a0349480cadf6096110a4ea7abced198bcf"
+    },
+    {
+      "name": "3 Human \u00b7 binding claim",
+      "taker": "binding \u2714",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9703 WETH",
+      "price": "2,537.62",
+      "fee": "0.150%",
+      "gas": "390273",
+      "tx": "0x4919f261\u20261e154066",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0x4919f2612420af53c310db1aaaf3dd95ff48ba07e6b2600f47bb72621e154066"
+    },
+    {
+      "name": "4 Human \u00b7 via aggregator",
+      "taker": "authorised \u2714",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9559 WETH",
+      "price": "2,556.36",
+      "fee": "0.390% (0.150% base + 0.240% surge)",
+      "gas": "717279",
+      "tx": "0xd31a637f\u2026c4b3d3a5",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0xd31a637f663a06a238edb673e5b01996590114ceae26cec1e1723c5ac4b3d3a5"
+    },
+    {
+      "name": "5 Human \u00b7 World ID",
+      "taker": "Semaphore \u2714",
+      "inStr": "5,000 USDC",
+      "outStr": "1.9276 WETH",
+      "price": "2,593.96",
+      "fee": "1.350% (0.150% base + 1.200% surge)",
+      "gas": "623467",
+      "tx": "0x061c30a4\u20268dbe2728",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0x061c30a4487bafaa3310cf9e14c853d63dc64cfcb25013562d2fa2f18dbe2728"
+    },
+    {
+      "name": "6 Arb bot 50k",
+      "taker": "unverified",
+      "inStr": "50,000 USDC",
+      "outStr": "18.7431 WETH",
+      "price": "2,667.64",
+      "fee": "1.500%",
+      "gas": "383492",
+      "tx": "0x534a8ec7\u20269d1c8e27",
+      "status": "filled",
+      "link": "https://sepolia.etherscan.io/tx/0x534a8ec7ecd7e317715f6e5fafd7843b30496b4c2756f5db411b39849d1c8e27"
+    },
+    {
+      "name": "7 Split 5x10k",
+      "taker": "unverified",
+      "inStr": "50,000 USDC",
+      "outStr": "17.8653 WETH",
+      "price": "2,798.72",
+      "fee": "1.500%",
+      "gas": "1917460",
+      "tx": "5 txs",
+      "status": "no gain",
+      "link": "https://sepolia.etherscan.io/tx/0x28d32e57ccd02d3b273c154d2908ad41d6b8e69f1096d0dc9c58da13cf54f67e"
+    },
+    {
+      "name": "8 Whale 500k",
+      "taker": "unverified",
+      "inStr": "500,000 USDC",
+      "outStr": "0 WETH",
+      "price": "\u2014",
+      "fee": "\u2014",
+      "gas": "97917",
+      "tx": "0x09bf4f67\u202600f26898",
+      "status": "blocked 0x9A",
+      "link": "https://sepolia.etherscan.io/tx/0x09bf4f670cf2e8cf91b219f1680eeb6817ccabecd1180bd5648b9dad00f26898"
+    },
+    {
+      "name": "9 Whale split 4x25%",
+      "taker": "unverified",
+      "inStr": "4 txs",
+      "outStr": "88.2930 WETH",
+      "price": "\u2014",
+      "fee": "\u2014",
+      "gas": "\u2014",
+      "tx": "4 txs",
+      "status": "1 of 4 filled",
+      "link": "https://sepolia.etherscan.io/tx/0x92aebe9c77ff9d3648b858654b6156122f482450d9984a4d0c0d5c30e7d47599"
+    }
+  ]
+}

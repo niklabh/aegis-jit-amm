@@ -1,0 +1,255 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployedAt": "2026-11-06T10:46:33.779Z",
+  "deployer": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+  "maker": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+  "takers": {
+    "human": "0xb47Fc63033Db7C92964aC2DB3Ec120A8605e8073",
+    "bot": "0xbF0df288Cb85e83158d98dCA7C513FDf3d5Bee84",
+    "whale": "0xd115abbd24D26308af7501f6644eF22357026f3A",
+    "worldHuman": "0x7ae898883b91534923737A792aAC3973CE5028F6"
+  },
+  "contracts": {
+    "aqua": {
+      "address": "0x9eF466A272b7977851c711148623eCaFCeF2B576",
+      "contract": "Aqua",
+      "constructorArgs": [],
+      "txHash": "0x75e4019f609b6f88d124c6294b56f30c91978ee955ffbfe444f5cae10478f553",
+      "blockNumber": 12075263
+    },
+    "usdc": {
+      "address": "0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c",
+      "contract": "TokenCustomDecimalsMock",
+      "constructorArgs": [
+        "USD Coin (AegisJIT mock)",
+        "USDC",
+        0,
+        6
+      ],
+      "txHash": "0x21fc701ab35daa97b10c4498f5c8a4ad2a791a7bada18187676f96124eaedb6c",
+      "blockNumber": 12075264
+    },
+    "weth": {
+      "address": "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+      "contract": "TokenCustomDecimalsMock",
+      "constructorArgs": [
+        "Wrapped Ether (AegisJIT mock)",
+        "WETH",
+        0,
+        18
+      ],
+      "txHash": "0x24df3275a2c4bf15d4aae296f2cba6da697dd072d5b86cde1d0d497ea2b824e3",
+      "blockNumber": 12075265
+    },
+    "router": {
+      "address": "0xd3b9B73806086AfD0C736EBD36470856E098A917",
+      "contract": "AegisSwapVMRouter",
+      "constructorArgs": [
+        "0x9eF466A272b7977851c711148623eCaFCeF2B576",
+        "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+        "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+        "AegisJIT",
+        "1"
+      ],
+      "txHash": "0x28e0b684260c131f6df964fd5c6bf45f24a955abc6c4484cf4ded154f387dcbd",
+      "blockNumber": 12075266
+    },
+    "hook": {
+      "address": "0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC",
+      "contract": "AegisJITVaultHook",
+      "constructorArgs": [
+        "0xd3b9B73806086AfD0C736EBD36470856E098A917"
+      ],
+      "txHash": "0x28bda284970e534713ecace6b1b4399a83c7d9c35b345c849f4af7001dcb7681",
+      "blockNumber": 12075267
+    },
+    "strategy": {
+      "address": "0x10dAae3dFf736978568fBAD6feF24F99C732a11D",
+      "contract": "AegisJITStrategy",
+      "constructorArgs": [],
+      "txHash": "0x4676996dc6c0f6588e7a6a383107860f9adb55808920c5d9f39938730687b8f0",
+      "blockNumber": 12075268
+    },
+    "forwarder": {
+      "address": "0xB39bf2c69106FfAAA60F0Bc35139CB6207FC8FC3",
+      "contract": "AegisZKForwarder",
+      "constructorArgs": [
+        "0xd3b9B73806086AfD0C736EBD36470856E098A917"
+      ],
+      "txHash": "0xa9d5a9e8bc163ac2f076a1eba36dbf8eb63fa64914ddc99b3ff0574498937f31",
+      "blockNumber": 12075270
+    },
+    "usdcVault": {
+      "address": "0xffDe80F6EE5db69807F4E244AD622686354c5eB1",
+      "contract": "MockERC4626Vault",
+      "constructorArgs": [
+        "0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c",
+        "Aegis USDC Vault",
+        "avUSDC"
+      ],
+      "txHash": "0x210ddcb911dc565ec697be7944503f868abf8db39fe6a879c50ab1591afb7a5c",
+      "blockNumber": 12075272
+    },
+    "wethVault": {
+      "address": "0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261",
+      "contract": "MockERC4626Vault",
+      "constructorArgs": [
+        "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+        "Aegis WETH Vault",
+        "avWETH"
+      ],
+      "txHash": "0x3d3dd1524433afb8315e66ce454180e3282e3338b864a21181e6b3e18165903f",
+      "blockNumber": 12075273
+    },
+    "pairingVerifier": {
+      "address": "0xbF1C48baC951E1D5429b27017585A4a920C29CCb",
+      "contract": "contracts/zk/vendor/anon-aadhaar/Verifier.sol:Verifier",
+      "constructorArgs": [],
+      "txHash": "0xec6ced5c6a686754f4e9166fa690d82a6c5818b44c8a55102e3eb122a8e77dca",
+      "blockNumber": 12075274
+    },
+    "groth16": {
+      "address": "0x100d5447596FF130Eb4813BA740f315cF9948d3F",
+      "contract": "AnonAadhaarGroth16Verifier",
+      "constructorArgs": [
+        "0xbF1C48baC951E1D5429b27017585A4a920C29CCb",
+        [
+          "179423072149871449489663359223133821359370095615226024492284075770447210161"
+        ]
+      ],
+      "txHash": "0xe702fb19ce73425e5e3d91e465735ee0c4f2f64ac33c6aff7e8c719b6691b167",
+      "blockNumber": 12075275
+    },
+    "adapter": {
+      "address": "0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc",
+      "contract": "AnonAadhaarAdapter",
+      "constructorArgs": [
+        "0x100d5447596FF130Eb4813BA740f315cF9948d3F",
+        "102813426516833688226979662308789821305009443667011332719223616285398443410",
+        86400,
+        600,
+        2592000,
+        "0"
+      ],
+      "txHash": "0x40408771a1f3a5adff5f0e69096d9f79027b65a48f52e560cdb5efd3f3b8cabf",
+      "blockNumber": 12075276
+    },
+    "semaphoreVerifier": {
+      "address": "0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882",
+      "contract": "contracts/zk/vendor/world-id/SemaphoreVerifier.sol:SemaphoreVerifier",
+      "constructorArgs": [],
+      "txHash": "0x19e23a745b2fb0f90a921d3e3f87b44101fc6de7487578cc264efd5c5d493882",
+      "blockNumber": 12075279
+    },
+    "worldIdRouter": {
+      "address": "0x08b72330f18Db923e66A7912658b85B9Aaa87b6B",
+      "contract": "MockWorldIDRouter",
+      "constructorArgs": [
+        "0xc68E85F4Ff30e4E2Cfe992f70722406f33E74882",
+        "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+        "1",
+        "13394325742851840862141765513077592851802908788321260562277488072853190094259",
+        3600
+      ],
+      "txHash": "0x9207242f18f4012311ea6a79d6f234655fe6e31919547acc6cf64a4610a58695",
+      "blockNumber": 12075280
+    },
+    "worldIdAdapter": {
+      "address": "0x17cC2A95F0d9B75eF3Df1dcfE7Dbd04bdc209A59",
+      "contract": "WorldIDAdapter",
+      "constructorArgs": [
+        "0x08b72330f18Db923e66A7912658b85B9Aaa87b6B",
+        "1",
+        "app_staging_aegis_jit_mumbai",
+        "aegis-jit-fee-tier",
+        0,
+        600
+      ],
+      "txHash": "0x205d2670fe885836cf5f7bcd6f1443dd34e58c916ff9edb987d186bdd3c275cd",
+      "blockNumber": 12075281
+    }
+  },
+  "cfg": {
+    "usdcLiquidity": "1000000000000",
+    "wethLiquidity": "400000000000000000000",
+    "lambdaBps": 2500,
+    "virtualBoostBps": 20000,
+    "exposureWindowSec": 600,
+    "baseFeeBps": 3000000,
+    "maxSurgeFeeBps": 15000000,
+    "impactThresholdBps": "100",
+    "decayWindowSec": 600,
+    "zkMode": 1,
+    "requiredStateCode": 0,
+    "minSellPriceUsdc": 2000,
+    "maxBuyPriceUsdc": 3000,
+    "maxProofAge": 2592000,
+    "epochDuration": 86400,
+    "epochGrace": 600,
+    "worldIdAppId": "app_staging_aegis_jit_mumbai",
+    "worldIdAction": "aegis-jit-fee-tier",
+    "worldIdEpochDuration": 0,
+    "worldIdEpochGrace": 600,
+    "rootHistoryExpiry": 3600,
+    "takerUsdc": "2000000000000",
+    "takerWeth": "500000000000000000000",
+    "fundTakerEth": "0.25"
+  },
+  "params": {
+    "maker": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+    "token0": "0x6C55FD16716A64FC40aE1857B3aF7039dDb8DE3c",
+    "token1": "0x8ba8E179BCdc065C497Dfa571D35dC7c3BB36535",
+    "vault0": "0xffDe80F6EE5db69807F4E244AD622686354c5eB1",
+    "vault1": "0x84b34a6c383Da7dD0f1098CE9E2569c6033E0261",
+    "jitHook": "0x78bCaf9e1f39424B651CC524Cb38aeeFC493C4EC",
+    "deadline": "1796553924",
+    "zkVerifierTypes": 3,
+    "worldIdVerifier": "0x17cC2A95F0d9B75eF3Df1dcfE7Dbd04bdc209A59",
+    "aadhaarVerifier": "0x309812F2e37E3CF3Ed28870ba2307F5e7d566cDc",
+    "zkMode": 1,
+    "requiredStateCode": 0,
+    "lambdaBps": 2500,
+    "virtualBoostBps": 20000,
+    "exposureWindowSec": 600,
+    "allocation0": "1000000000000",
+    "allocation1": "400000000000000000000",
+    "floor01": {
+      "amountIn": "2000000000",
+      "amountOut": "1000000000000000000"
+    },
+    "floor10": {
+      "amountIn": "1000000000000000000",
+      "amountOut": "3000000000"
+    },
+    "baseFeeBps": 3000000,
+    "maxSurgeFeeBps": 15000000,
+    "impactThresholdBps": "100",
+    "decayWindowSec": 600,
+    "salt": "1"
+  },
+  "order": {
+    "maker": "0x467071F2ee89347354ee91105d8dbA129D1c8eE6",
+    "traits": "0x4cc0000000a000a0006400280000000000000000000000000000000000000000",
+    "data": "0x6c55fd16716a64fc40ae1857b3af7039ddb8de3c8ba8e179bcdc065c497dfa571d35dc7c3bb3653578bcaf9e1f39424b651cc524cb38aeefc493c4ecffde80f6ee5db69807f4e244ad622686354c5eb184b34a6c383da7dd0f1098ce9e2569c6033e026178bcaf9e1f39424b651cc524cb38aeefc493c4ecffde80f6ee5db69807f4e244ad622686354c5eb184b34a6c383da7dd0f1098ce9e2569c6033e02610d05006b153cc42a2e03010000000017cc2a95f0d9b75ef3df1dcfe7dbd04bdc209a59309812f2e37e3cf3ed28870ba2307f5e7d566cdc9a56ffde80f6ee5db69807f4e244ad622686354c5eb184b34a6c383da7dd0f1098ce9e2569c6033e0261000009c4000000004e200000000000000000000000e8d4a510000000000000000015af1d78b58c400000000002580b168ba8e179bcdc065c497dfa571d35dc7c3bb3653500bd2b1000000000773594000de0b6b3a76400000a0200cf2b1000000000b2d05e000de0b6b3a76400007a14002dc6c000e4e1c0000000000000006400000258110014080000000000000001"
+  },
+  "orderHash": "0xf6d915b75f75797d743648038da21bd8bdb084de5bfdddefaedd73f0a5928b99",
+  "ship": {
+    "txHash": "0xa402cc734d224671e42793af6ef1969278ccc7ba2ca1be46042ff6c17734c115",
+    "blockNumber": 12076059
+  },
+  "previousOrders": [
+    {
+      "orderHash": "0xc457f729c74cc728358e503c525ef617062979f1fb056f37184eab5496b34b93",
+      "salt": "0",
+      "shipTx": "0x5de91e6a8c6d075df7d01866d65b42bb0f9c0be9bd8282297144ca8472682899"
+    }
+  ],
+  "notes": [
+    "USDC and WETH are mintable ERC-20 mocks (TokenCustomDecimalsMock, 6 / 18 decimals).",
+    "MockERC4626Vault = OpenZeppelin ERC-4626; the Maker's capital sits there, the hook moves it JIT.",
+    "World ID: MockWorldIDRouter (router + identity-manager semantics) in front of World ID's real SemaphoreVerifier; identity tree = packages/world-id local tree.",
+    "ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.",
+    "Order deadline: 30 days after deployment."
+  ]
+}

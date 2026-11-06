@@ -22,6 +22,9 @@ const FEE_BPS = 1_000_000_000n;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Row { name: string; taker: string; inStr: string; outStr: string; price: string; fee: string; gas: string; tx: string; status: string; link?: string }
+/** fee column: effective rate, with the base / surge split whenever the flow bucket added surge */
+const feeLabel = (f: { total: bigint; base: bigint; surge: bigint }, amount: bigint) =>
+  f.surge === 0n ? pct(f.total, amount, 3) : `${pct(f.total, amount, 3)} (${pct(f.base, amount, 3)} base + ${pct(f.surge, amount, 3)} surge)`;
 
 async function main() {
   const rec = loadRecord();
@@ -230,7 +233,7 @@ async function main() {
     ["gas", `${n(s2.rc.gasUsed)}  vs ${n(botGas)} for the bot baseline → ZK overhead ${n(s2.rc.gasUsed - botGas)}`],
     ["avUSDC / avWETH (Maker)", `${fmtUsdc(v2a.usdc)} → ${fmtUsdc(v2b.usdc)}  /  ${fmtWeth(v2a.weth)} → ${fmtWeth(v2b.weth)}  (JIT withdraw + re-deposit)`],
   ]);
-  push({ name: "2 Human · ZK Aadhaar", taker: "Groth16 ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s2.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s2.amountOut), fee: pct(fee2.total, AMT, 3), gas: s2.rc.gasUsed.toString(), tx: short(s2.rc.hash), status: "filled", link: txLink(chainId, s2.rc.hash) });
+  push({ name: "2 Human · ZK Aadhaar", taker: "Groth16 ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s2.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s2.amountOut), fee: feeLabel(fee2, AMT), gas: s2.rc.gasUsed.toString(), tx: short(s2.rc.hash), status: "filled", link: txLink(chainId, s2.rc.hash) });
   s2gas = s2.rc.gasUsed;
   }
 
@@ -250,7 +253,7 @@ async function main() {
     ["fee charged", `${fmtUsdc(fee3.total)} USDC (${pct(fee3.total, AMT, 3)})  ${modelMark(fee3.expectedOut, s3.amountOut)}`],
     ["gas", `${n(s3.rc.gasUsed)}  vs ${n(botGas)} baseline → fast-path overhead ${n(s3.rc.gasUsed - botGas)}  (full proof: ${s2gas ? n(s2gas) : "see scenario 2"})`],
   ]);
-  push({ name: "3 Human · binding claim", taker: "binding ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s3.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s3.amountOut), fee: pct(fee3.total, AMT, 3), gas: s3.rc.gasUsed.toString(), tx: short(s3.rc.hash), status: "filled", link: txLink(chainId, s3.rc.hash) });
+  push({ name: "3 Human · binding claim", taker: "binding ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s3.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s3.amountOut), fee: feeLabel(fee3, AMT), gas: s3.rc.gasUsed.toString(), tx: short(s3.rc.hash), status: "filled", link: txLink(chainId, s3.rc.hash) });
   }
 
   // ---------------- S4 via authorised aggregator
@@ -276,7 +279,7 @@ async function main() {
     ["quote(from = forwarder) / swap()", `${fmtWeth(q4, 6)} / ${fmtWeth(out4, 6)} WETH  ${out4 === q4 ? C.green + "== quote ✔" + C.reset : C.red + "!= quote" + C.reset} · ${out4 > botQ4.amountOut ? C.green + "human tier ✔" + C.reset : C.red + "bot tier" + C.reset}`],
     ["output delivered to the human", `${fmtWeth((await weth.balanceOf(human.address)) - wethBefore, 6)} WETH  ${modelMark(fee4.expectedOut, out4)}`],
   ]);
-  push({ name: "4 Human · via aggregator", taker: "authorised ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(out4)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / out4), fee: pct(fee4.total, AMT, 3), gas: rc4.gasUsed.toString(), tx: short(rc4.hash), status: "filled", link: txLink(chainId, rc4.hash) });
+  push({ name: "4 Human · via aggregator", taker: "authorised ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(out4)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / out4), fee: feeLabel(fee4, AMT), gas: rc4.gasUsed.toString(), tx: short(rc4.hash), status: "filled", link: txLink(chainId, rc4.hash) });
   }
 
   // ---------------- S5 World ID human
@@ -302,7 +305,7 @@ async function main() {
     ["same trade as unverified bot (quote)", `${fmtWeth(botQ5.amountOut, 6)} WETH`],
     ["gas", `${n(s5.rc.gasUsed)}  vs ${n(botGas)} baseline → World ID overhead ${n(s5.rc.gasUsed - botGas)}`],
   ]);
-  push({ name: "5 Human · World ID", taker: "Semaphore ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s5.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s5.amountOut), fee: pct(fee5.total, AMT, 3), gas: s5.rc.gasUsed.toString(), tx: short(s5.rc.hash), status: "filled", link: txLink(chainId, s5.rc.hash) });
+  push({ name: "5 Human · World ID", taker: "Semaphore ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s5.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s5.amountOut), fee: feeLabel(fee5, AMT), gas: s5.rc.gasUsed.toString(), tx: short(s5.rc.hash), status: "filled", link: txLink(chainId, s5.rc.hash) });
   void fee2base;
   }
 
@@ -320,7 +323,7 @@ async function main() {
     ["base fee / surge fee", `${fmtUsdc(fee6.base)} / ${C.yellow}${fmtUsdc(fee6.surge)}${C.reset} USDC`],
     ["total fee", `${fmtUsdc(fee6.total)} USDC (${pct(fee6.total, BIG, 3)} effective)  ${modelMark(fee6.expectedOut, s6.amountOut)}`],
   ]);
-  push({ name: "6 Arb bot 50k", taker: "unverified", inStr: "50,000 USDC", outStr: `${fmtWeth(s6.amountOut)} WETH`, price: fmtUsdc(BIG * 10n ** 18n / s6.amountOut), fee: pct(fee6.total, BIG, 3), gas: s6.rc.gasUsed.toString(), tx: short(s6.rc.hash), status: "filled", link: txLink(chainId, s6.rc.hash) });
+  push({ name: "6 Arb bot 50k", taker: "unverified", inStr: "50,000 USDC", outStr: `${fmtWeth(s6.amountOut)} WETH`, price: fmtUsdc(BIG * 10n ** 18n / s6.amountOut), fee: feeLabel(fee6, BIG), gas: s6.rc.gasUsed.toString(), tx: short(s6.rc.hash), status: "filled", link: txLink(chainId, s6.rc.hash) });
   }
 
   // ---------------- S7 split attack vs single (quote as the counterfactual)
