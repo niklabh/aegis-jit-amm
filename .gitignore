@@ -64,3 +64,6 @@ private/
 
 # Deploy checkpoints (resumable deploy script); the final aegis.json is committed instead
 deployments/*/aegis.partial.json
+
+# local presenter notes (not part of the submission)
+docs/DEMO.md
