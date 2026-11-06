@@ -17,8 +17,8 @@ Three custom instructions are added to the SwapVM interpreter:
 | Opcode | Name                | Role                                                                  |
 |--------|---------------------|-----------------------------------------------------------------------|
 | `0x2A` | `ZKIdentityGuard`   | Sybil/compliance gate with a modular verifier router (World ID **or** ZK Aadhaar proofs); tiers takers into *verified human* vs *unverified* |
-| `0x9A` | `JITVaultReserves`  | Reads live ERC-4626 backing; enforces per-swap exposure cap λ; virtual-offset depth boost |
-| `0x7A` | `VolatilitySurgeFee`| Size- and flow-aware LVR fee; 50% base-fee discount for verified humans |
+| `0x9A` | `JITVaultReserves`  | Reads live ERC-4626 backing (`maxWithdraw`); enforces the exposure cap λ per execution AND per window (token bucket); virtual-offset depth boost |
+| `0x7A` | `VolatilitySurgeFee`| Size- and flow-aware LVR fee on a token-bucket flow window; 50% base-fee discount for verified humans |
 
 ## 2. Verified SwapVM facts (from source)
 
@@ -97,7 +97,7 @@ It can only move the Maker's assets between the Maker's wallet and the Maker's v
 | 1 | `Deadline` | `0x0D` | optional (deadline = 0 → omitted) |
 | 2 | Aqua balances | — | implicit: preloaded by `swap()`/`quote()` from `AQUA.safeBalances` |
 | 3 | `ZKIdentityGuard` | `0x2A` | consumes a typed ZK payload (World ID or ZK Aadhaar) from taker `instructionsArgs` |
-| 4 | `JITVaultReserves` | `0x9A` | wraps the rest of the program; post-checks exposure cap |
+| 4 | `JITVaultReserves` | `0x9A` | wraps the rest of the program; post-checks the per-execution cap and the per-window budget |
 | 5 | `JumpIfTokenIn` / `RequireMinRate` ×2 / `Jump` | `0x0B`,`0x2B`,`0x0A` | optional two-sided rate floor (one MinRate per direction) |
 | 6 | `VolatilitySurgeFee` | `0x7A` | wraps the swap instruction |
 | 7 | `XYCSwap` | `0x11` | constant-product over boosted reserves |
@@ -138,15 +138,37 @@ pathways — the whole point of the dual verification.
 
 ```
 [uint16 L][verifierType:1][nullifier:32][revealArray: 4×32 — type 2 only][proof: rest]
+[uint16 33][verifierType:1][nullifier:32]                                            (binding claim, no proof)
 ```
 
 | Type | `nullifier` | `revealArray` | `proof` envelope | `L` |
 |---|---|---|---|---:|
-| `0x01` World ID | World ID `nullifierHash` | absent (zeros are passed to the adapter) | `abi.encode(uint256 merkleRoot, uint256[8] proof)` 288 B, or `abi.encode(merkleRoot, address recipient, uint256[8])` 320 B via a trusted forwarder | 321 / 353 |
-| `0x02` ZK Aadhaar | Anon Aadhaar nullifier (epoch-rotating) | `[ageAbove18, gender, pincode, state]` | `abi.encode(uint256 timestamp, uint256[8])` 288 B, or `(timestamp, recipient, uint256[8])` 320 B | 449 / 481 |
+| `0x01` World ID | World ID `nullifierHash` | absent (zeros are passed to the adapter) | `abi.encode(uint256 merkleRoot, uint256 epoch, uint256[8] proof)` 320 B, or `abi.encode(merkleRoot, epoch, address recipient, uint256 authDeadline, bytes32 r, bytes32 s, uint8 v, uint256[8])` 480 B when a contract presents it for `recipient` | 353 / 513 |
+| `0x02` ZK Aadhaar | Anon Aadhaar nullifier (epoch-rotating) | `[ageAbove18, gender, pincode, state]` | `abi.encode(uint256 timestamp, uint256 epoch, uint256 pubkeyHash, uint256[8])` 352 B, or `(timestamp, epoch, pubkeyHash, recipient, authDeadline, r, s, v, uint256[8])` 512 B | 481 / 641 |
+| either | the bound nullifier | absent | **none** — binding claim | 33 |
 
 Empty/short payload ⇒ "no proof". A type the Maker does not accept (`type & verifierTypes == 0`)
 ⇒ "no proof". Both cases follow the mode rules below; nothing reverts in tiered mode.
+
+**Binding claim (fast path).** A payload of exactly `[type][nullifier]` is not sent to the adapter.
+0x2A reads `_bindings[verifier][nullifier]` and treats the taker as verified iff
+`beneficiary == ctx.query.taker && validUntil >= block.timestamp`. Claims are refused on orders with
+`requiredStateCode != 0` (the opcode-level policy was never evaluated for that order) and never for a
+contract taker acting for someone else. Cost: one SLOAD instead of a ~260k-gas pairing, so only the
+first trade per epoch carries a proof (demo: 339.5k gas vs 681k).
+
+**Taker authorisation (aggregators, relayers, smart accounts).** The `recipient` envelopes are honoured
+for any taker that presents the recipient's EIP-712 signature over
+`TakerAuthorization(address taker, uint256 deadline)` in the adapter's domain
+(`name = "AegisJIT ZK Adapter"`, `version = "1"`, `chainId`, `verifyingContract = adapter`), verified
+with OpenZeppelin `SignatureChecker` (ECDSA or ERC-1271, view-only). This replaced the constructor-fixed
+forwarder whitelist: no admin, no setters, any aggregator, bounded by the deadline the human chose.
+
+**Epochs and grace.** The envelope names its `epoch`; the adapter derives the nullifier seed (Aadhaar) or
+the external nullifier (World ID) from it and accepts `epoch == currentEpoch()`, or
+`epoch + 1 == currentEpoch()` during the first `EPOCH_GRACE` seconds of the current epoch (default 600 s),
+so a ~13 s proof made before a roll still lands. The binding validity returned to 0x2A is the end of the
+proof's own epoch, so a grace proof grants the tier for that trade but cannot extend a binding.
 
 **Execution.** `0x2A` chops the payload, selects the adapter for the type, runs the type's cheap
 public-input policy first (type 2: `revealArray[0] == 1`, state code), then STATICCALLs
@@ -164,15 +186,19 @@ and the Anon Aadhaar adapter are interchangeable from the opcode's point of view
   cannot leak across swaps, and needs no `TSTORE`, which would revert inside the `view` `quote()`.
 
 **Nullifier binding (anti-Sybil), per verifier.** After a successful proof check, 0x2A looks up
-`nullifierTaker[verifier][nullifier]`. If unbound, the first **swap** binds it to the beneficiary
-(written only when `!isStaticContext`). If bound to another beneficiary, the taker is unverified.
-Keying by verifier keeps the two schemes in separate namespaces.
+`_bindings[verifier][nullifier] = {beneficiary, validUntil}`. If unbound, the first **swap** binds it
+to the beneficiary with the adapter's `validUntil` (written only when `!isStaticContext`). If bound
+to another beneficiary, the taker is unverified, expired or not: a nullifier stays with its first
+address. The same beneficiary may re-prove to extend `validUntil`. Keying by verifier keeps the two
+schemes in separate namespaces.
 * World ID: `nullifierHash = Poseidon(externalNullifier, identityNullifier)` is stable per human per
-  (app, action), so this is **one discounted address per human** for the lifetime of the adapter.
-  World ID's own template marks a nullifier as "used" once; a trading discount needs the human to
-  keep trading, so the binding is to an address, not a one-shot flag.
+  (app, action). With rotation off this is **one discounted address per human** for the lifetime of
+  the adapter (`validUntil = type(uint40).max`). With `EPOCH_DURATION > 0` the action becomes
+  `actionFor(epoch) = "<action>-<epoch>"`, the `nullifierHash` changes every epoch and the binding
+  ends with the epoch — the same model as Aadhaar.
 * ZK Aadhaar with an epoch-rotating `AnonAadhaarAdapter`: the nullifier changes every epoch, so
-  this is **one address per human per epoch**, unlinkable across epochs (unchanged).
+  this is **one address per human per epoch**, unlinkable *by nullifier* across epochs. The binding
+  ends at `min(epochEnd, timestamp + MAX_PROOF_AGE)`.
 
 **World ID adapter: `contracts/zk/WorldIDAdapter.sol`** (type 1). It implements `IZKVerifier` over
 the World ID Router (`contracts/zk/world-id/IWorldID.sol`, the 6-argument router entry point,
@@ -189,9 +215,12 @@ declared `view`):
   from another address presents a different `signalHash` and the pairing check fails.
 - **External nullifier:** `hashToField(abi.encodePacked(hashToField(appId), action))` from the
   constructor's `appId` / `action` (World ID template). One action = one `nullifierHash` per human.
-- **Forwarders:** the 320-byte envelope `(root, recipient, proof)` binds `signal = recipient` and is
-  honoured only when `taker` is a constructor-fixed trusted forwarder (`AegisZKForwarder`, which
-  enforces `recipient == msg.sender`). `AegisZKForwarder._zkRecipient` understands both payload types.
+- **Authorised takers:** the 480-byte envelope `(root, epoch, recipient, deadline, r, s, v, proof)`
+  binds `signal = recipient` and is honoured for any `taker` holding the recipient's EIP-712
+  `TakerAuthorization` (see §5.1). `AegisZKForwarder` is the reference aggregator: it enforces
+  `recipient == msg.sender` and understands both payload types, but nothing whitelists it.
+- **Epochs:** `currentEpoch`, `isAcceptedEpoch` (grace), `epochEnd`, `actionFor(epoch)`,
+  `externalNullifierFor(epoch)`, `currentExternalNullifier`. `EXTERNAL_NULLIFIER` stays the static one.
 - No admin, no setters, no stored roots: root validity is the Router's business.
 
 **Local World ID stack (tests, fuzzing, demo, dashboard).** `contracts/mocks/MockWorldIDRouter.sol`
@@ -208,24 +237,29 @@ statements, like `MockGroth16AnonAadhaar` — or the vendored, unmodified World 
 tests (invalid roots, expiry, groups) need the router semantics; the brief listed it under the
 demo milestone.
 
-**ZK Aadhaar adapter (type 2): `contracts/zk/AnonAadhaarAdapter.sol`.** Unchanged. It implements
+**ZK Aadhaar adapter (type 2): `contracts/zk/AnonAadhaarAdapter.sol`.** It implements
 `IZKVerifier` over the deployed Anon Aadhaar contract:
-`verifyAnonAadhaarProof(nullifierSeed, nullifier, timestamp, signal, revealArray, groth16Proof)`.
-- `proof` bytes = `abi.encode(uint256 timestamp, uint256[8] groth16Proof)` (288 B).
+`verifyAnonAadhaarProof(nullifierSeed, nullifier, timestamp, signal, revealArray, groth16Proof)`, or
+`verifyAnonAadhaarProofWithKey(pubkeyHash, …)` when the envelope names a key.
+- `proof` bytes = `abi.encode(uint256 timestamp, uint256 epoch, uint256 pubkeyHash, uint256[8])` (352 B),
+  or with `(address recipient, uint256 deadline, bytes32 r, bytes32 s, uint8 v)` (512 B).
 - `signal = uint256(uint160(beneficiary))` (Anon Aadhaar hashes it internally).
-- Freshness: `0 <= block.timestamp − timestamp <= MAX_PROOF_AGE` (default 24 h).
+- Freshness: `0 <= block.timestamp − timestamp <= MAX_PROOF_AGE` (default 30 days; `timestamp` is the
+  QR's issuance hour, so this is how often a resident must re-download their QR).
 - `revealArray[0] == 1`. `revealArray[3]` must equal `REQUIRED_STATE` if set (full-width because
   the circuit emits the state as a packed string; Anon Aadhaar order is `[ageAbove18, gender,
   pincode, state]`).
-- Epoch-rotating nullifiers: `nullifierSeed = keccak256(APP_SEED, epoch) mod p`,
-  `epoch = block.timestamp / epochDuration` (`0` = static seed). The circuit computes
+- Epoch-rotating nullifiers: `nullifierSeed = keccak256(APP_SEED, epoch) mod p` for the envelope's
+  `epoch`, accepted per §5.1 (current epoch, or previous during `EPOCH_GRACE`). The circuit computes
   `nullifier = Poseidon(nullifierSeed, photo)`, so the nullifier rotates every epoch.
-- Forwarded envelope `(timestamp, recipient, uint256[8])`, trusted forwarders as above.
+- UIDAI key set: `AnonAadhaarGroth16Verifier` holds a set of trusted circuit `pubkeyHash` values
+  (first = primary, used by the upstream-shaped entry point). UIDAI rotates certificates and several
+  stay valid at once; the envelope's `pubkeyHash` selects one (0 = primary).
 
 `MockGroth16AnonAadhaar` is the Aadhaar soundness double; `MockAnonIdentityVerifier` (ECDSA
 attestation, type-2 shaped) still backs the main invariant suite.
 
-### 5.2 `0x9A JITVaultReserves` — 82 bytes
+### 5.2 `0x9A JITVaultReserves` — 86 bytes
 | Offset | Size | Field | Meaning |
 |-------:|-----:|-------|---------|
 | 0  | 20 | `address vaultA` | ERC-4626 backing for `tokenA` (lower address) or `0` = use Aqua balance |
@@ -234,22 +268,34 @@ attestation, type-2 shaped) still backs the main invariant suite.
 | 44 | 6  | `uint48 virtualBoostBps` | virtual depth multiplier, `>= 10000` (20000 = 2.0x) |
 | 50 | 16 | `uint128 refA` | Maker's committed Aqua allocation of `tokenA` (boost anchor) |
 | 66 | 16 | `uint128 refB` | Maker's committed Aqua allocation of `tokenB` |
+| 82 | 4  | `uint32 exposureWindowSec` | λ budget window in seconds (`0` = per-execution cap only; 600 in the demo) |
 
 `vaultIn/vaultOut` and `refIn/refOut` are resolved at runtime from the A/B fields by
 comparing `tokenIn < tokenOut` (same convention as `MinRateArgsBuilder`), so one order serves
 both swap directions.
 
-Execution (view-safe: only STATICCALLs, no SSTORE):
+Execution (quote == swap: reads in both, writes only when `!isStaticContext`):
 1. For each non-zero vault: `require(vault.asset() == token)`.
-2. `rawOut = vaultOut == 0 ? ctx.swap.balanceOut : vaultOut.convertToAssets(vaultOut.balanceOf(maker))`.
+2. `rawOut = vaultOut == 0 ? ctx.swap.balanceOut : vaultOut.maxWithdraw(maker)` — what the Maker can
+   redeem right now, including vault-level liquidity limits, so a quote never promises what the
+   `preTransferOut` hook could not withdraw.
 3. `capOut = min(rawOut * λ / 1e4, ctx.swap.balanceOut)` — never more than λ of the live
-   underlying, and never more than Aqua can actually pull.
-4. Concentration via **constant** virtual offsets:
+   withdrawable backing, and never more than Aqua can actually pull.
+4. Budget bucket per `(orderHash, tokenOut)`: `{start, outFlow, refBacking}` on a fixed grid of
+   `exposureWindowSec`. `used = max(0, outFlow − k · λ·refBacking)` for the `k` whole windows elapsed;
+   when `used == 0` the grid re-anchors at this trade and `refBacking = rawOut`.
+   `remaining = λ·refBacking − used`.
+5. Concentration via **constant** virtual offsets:
    `balanceIn += refIn·(boost−1e4)/1e4`, `balanceOut += refOut·(boost−1e4)/1e4`.
    This is a shifted constant-product curve (a Uniswap-v3-style range): at ship time the
    book has `boost×` depth, and the curve stays path-independent as Aqua balances evolve.
-5. exactOut: pre-check `amountOut <= capOut`. Then `ctx.runLoop()`.
-6. Post-check `amountOut <= capOut` else `revert JITExposureCapExceeded(amountOut, capOut)`.
+6. exactOut: pre-check `amountOut <= capOut` and `amountOut <= remaining`. Then `ctx.runLoop()`.
+7. Post-check the same two bounds, else `revert JITExposureCapExceeded(amountOut, capOut)` /
+   `JITExposureBudgetExceeded(amountOut, remaining)`.
+8. swap only: `outFlow = used + amountOut`, store `start`, `refBacking`, emit `ExposureWindowUpdated`.
+
+Bound: at most λ of the backing leaves per window in steady state, at most 2λ across one window
+boundary, however many executions, blocks or taker addresses the drain is split into.
 
 ### 5.3 `0x7A VolatilitySurgeFee` — 20 bytes
 | Offset | Size | Field | Meaning |
@@ -257,7 +303,7 @@ Execution (view-safe: only STATICCALLs, no SSTORE):
 | 0  | 4 | `uint32 baseFeeBps` | base LP fee, `BPS = 1e9` scale |
 | 4  | 4 | `uint32 maxSurgeFeeBps` | marginal fee rate for flow above threshold, `base <= max < 1e9` |
 | 8  | 8 | `uint64 impactThresholdBps` | utilization (1e4 = 100% of `balanceIn`) where surge begins |
-| 16 | 4 | `uint32 decayWindowSec` | flow-accumulation window (0 = stateless, per-trade) |
+| 16 | 4 | `uint32 decayWindowSec` | token-bucket window: leaks one threshold per window, never resets (0 = stateless, per-trade) |
 
 **Fee schedule.** Fee is charged on gross `amountIn` (Maker-side, stays in the pool like
 `FlatFeeAmountIn`). Let `B` = reference `balanceIn`, `T = B·threshold/1e4`, `F` = flow
@@ -280,11 +326,16 @@ unchanged (large human trades are still toxic to the pool).
   `g = ceilDiv(n·1e9 − G0·P, 1e9 − b − P)`; then `while (net(g) < n) g++` (≤ 2 steps).
   `net` is non-decreasing (marginal rate < 100%), so this yields the smallest-or-near `g`
   with `net(g) >= n` — Maker-favouring and symmetric with exactIn within rounding.
-* **Window state.** `B` and `F` are read from storage keyed by `(orderHash, tokenIn)`; a
-  window starts at the first trade after expiry, freezing `B` and resetting `F = 0`; flow
-  accumulates gross `g`. Writes happen **only when `!ctx.vm.isStaticContext`**, after the
-  amounts are computed (same pattern as SwapVM's `Balances._dynamicBalancesXD`). `quote`
-  and `swap` read identical pre-state ⇒ identical results.
+* **Bucket state.** `{start, flow, refBalanceIn}` is read from storage keyed by
+  `(orderHash, tokenIn)` and evaluated on a fixed time grid: for the `k` whole windows elapsed since
+  `start`, `F = max(0, flow − k·T)` with `T = refBalanceIn·threshold/1e4`; `B` stays frozen while
+  `F > 0`, and when the bucket is empty the grid re-anchors at this trade with `B = balanceIn`.
+  Inside a window nothing depends on time, so `quote` and `swap` are equal to the wei whenever
+  both fall in the same window (Hardhat's `eth_call` runs at the latest block's timestamp, so a
+  per-second decay would have made every quote stale by one block — rejected for that reason).
+  Writes (`start`, `F + g`, `B`) happen **only when `!ctx.vm.isStaticContext`**, after the amounts
+  are computed (same pattern as SwapVM's `Balances._dynamicBalancesXD`). Capacity: `T` per window
+  at the base rate in steady state; a `k·T` burst keeps the surge on for `k` windows.
 
 ## 6. Invariants (proved in `test/AegisJIT.test.ts`)
 
@@ -293,8 +344,13 @@ unchanged (large human trades are still toxic to the pool).
 3. **Sub-additivity** — two back-to-back `amount/2` swaps never return more than one `amount` swap.
 4. **Monotonicity** — `amountOut` strictly increases with `amountIn`; average price non-increasing.
 5. **ZK tier differentiation** — verified human gets strictly more out than unverified bot for the same input.
-6. **JIT protection** — no single execution moves more than λ of the Maker's vault-backed `tokenOut`.
+6. **JIT protection** — no single execution, and no window of executions, moves more than λ of the
+   Maker's withdrawable `tokenOut` backing (`JITExposureCapExceeded` / `JITExposureBudgetExceeded`).
 7. **Round-trip safety** — buy-then-sell never returns more than the taker put in.
+8. **Binding claims** (`test/BindingFastPath.test.ts`) — after one proof the bound address gets the
+   tier from a 33-byte claim with no adapter call; nobody else does; claims die with the epoch.
+9. **Taker authorisation** (`test/EpochNullifiers.test.ts`, Foundry) — exactly the authorised
+   contract may present a human's proof, until the deadline.
 
 Fee-math properties (`net` monotone, minimal exactOut inverse, fee cap, pipeline symmetry)
 are additionally fuzzed with Foundry in `test/foundry/SurgeFeeMath.t.sol`.
@@ -304,7 +360,7 @@ are additionally fuzzed with Foundry in `test/foundry/SurgeFeeMath.t.sol`.
 | Brief | This spec | Reason |
 |-------|-----------|--------|
 | `ctx.balanceIn/Out = raw × λ` each swap | λ is a hard **exposure cap**; pricing uses the Aqua book + constant boost offsets | Re-clamping by λ<1 on every swap re-centres the curve after each trade, so splitting a trade gets a *better* price (worked example: 2×50k USDC → 32.0 WETH vs 1×100k → 28.6 WETH on a 1M/400 book with λ = 25%). That violates invariant 3. |
-| `virtualBoostBps` as a multiplier on current reserves; 50-byte layout | Boost = constant offsets `(boost−1)·ref`; layout extended by `refA, refB` (82 bytes) | Multiplying the *current* reserves by `boost > 1` on every swap is round-trip exploitable: buy 50k USDC of WETH, sell it straight back → 52.5k USDC (2× boost, 1M/400 book), a 2.5k loss to the Maker before fees. Constant offsets make it a fixed shifted curve (round trip returns exactly 50k). A constant needs an absolute anchor, and no view-safe one exists at runtime, so the Maker's committed allocation is encoded in the args. (Found while implementing; the first draft of this spec used the multiplier.) |
+| `virtualBoostBps` as a multiplier on current reserves; 50-byte layout | Boost = constant offsets `(boost−1)·ref`; layout extended by `refA, refB` (82 bytes; 86 since `exposureWindowSec`, §7d) | Multiplying the *current* reserves by `boost > 1` on every swap is round-trip exploitable: buy 50k USDC of WETH, sell it straight back → 52.5k USDC (2× boost, 1M/400 book), a 2.5k loss to the Maker before fees. Constant offsets make it a fixed shifted curve (round trip returns exactly 50k). A constant needs an absolute anchor, and no view-safe one exists at runtime, so the Maker's committed allocation is encoded in the args. (Found while implementing; the first draft of this spec used the multiplier.) |
 | Utilization `= amountIn·1e4/balanceIn`, stateless | Utilization measured on **cumulative flow within `decayWindowSec`** with a frozen reference balance | Any stateless convex size-fee is split-gameable (two halves each below threshold dodge the surge). Accumulating flow makes the fee path-independent within the window, which is what invariant 3 needs; `decayWindowSec` becomes the accumulation window. |
 | `BPS = 1e7` | `BPS = 1e9` | Matches `Fee.sol` in the pinned SwapVM. |
 | `RequireMinRate` last | Before the surge fee / swap | MinRate is a wrapping instruction and reverts if amounts are already computed. |
@@ -317,9 +373,24 @@ are additionally fuzzed with Foundry in `test/foundry/SurgeFeeMath.t.sol`.
 | `MockWorldIDRouter` in the demo milestone | introduced with the adapter | The adapter's unit tests for invalid / expired roots and groups need the router semantics. |
 | "human-verified flag in transient state" | dispatcher switch in the in-memory `Context` | `quote()` is a `view` (STATICCALL): `TSTORE` would revert there and break quote == swap. |
 
-Known limits (documented, not hidden): the surge window resets at expiry, so a patient
-taker who splits across windows pays less surge; λ caps a *single* execution, while the
-Aqua allocation bounds cumulative exposure.
+## 7d. Hardening after the adversarial review (2026-11-06)
+
+| Finding | Change |
+|---|---|
+| λ capped one execution; 4 max-cap swaps in one block drained 68% of the vault, 10 drained 94% | per-window λ budget bucket in 0x9A (`exposureWindowSec`, 86-byte args), `JITExposureBudgetExceeded` |
+| 0x7A window reset at expiry: a 601 s wait restored full base-fee capacity after any burst | token bucket on a fixed grid: leaks one `T` per window, never resets |
+| `convertToAssets(balanceOf)` sizing could quote what an illiquid vault cannot withdraw; a capped vault failed settlement | `maxWithdraw(maker)` sizing; hook skips the re-deposit (`JITDepositSkipped`) instead of reverting |
+| every swap paid the ~260k-gas pairing | `{beneficiary, validUntil}` bindings + 33-byte binding claims (fast path); first-address rule survives expiry |
+| a proof made just before the epoch roll was rejected on inclusion | envelope names its `epoch`; previous epoch accepted during `EPOCH_GRACE` |
+| World ID `nullifierHash` permanently linkable; lost wallet = lost tier forever | optional per-epoch action rotation (`actionFor(epoch)`) |
+| forwarder whitelist fixed in the adapter constructors; aggregators could never be added | EIP-712 `TakerAuthorization(taker, deadline)` by the beneficiary, ECDSA / ERC-1271 |
+| one hard-coded UIDAI key hash | `AnonAadhaarGroth16Verifier` trusts a key set; envelope carries `pubkeyHash` |
+| `MAX_PROOF_AGE = 24 h` implied daily QR re-downloads | default 30 days; epochs, not QR age, drive re-proving |
+| "unlinkable across epochs" overstated | README states what the Anon Aadhaar `timestamp` / `state` public signals still leak |
+
+Known limits (documented, not hidden): the bucket leaks `T` per window, so a taker who waits
+`k` windows regains `k·T` of base-fee capacity; λ bounds each window (2λ across one boundary),
+while the Aqua allocation bounds cumulative exposure over longer horizons.
 
 ## 7a. Bytecode size (EIP-170)
 
@@ -352,10 +423,12 @@ circuit inputs (prover/anon-aadhaar.ts, mirrors @anon-aadhaar/core 2.4.3 generat
    ▼  snarkjs groth16.fullProve(aadhaar-verifier.wasm, circuit_final.zkey)   ~13 s, Node, local only
 public signals [pubkeyHash, nullifier, timestamp, ageAbove18, gender, pincode, state, nullifierSeed, signalHash]
    ▼  packed proof [a0, a1, b01, b00, b11, b10, c0, c1]
-0x2A taker args = [uint16 L][nullifier][revealArray[4]][abi.encode(timestamp, [recipient,] uint256[8])]
+0x2A taker args = [uint16 L][nullifier][revealArray[4]][abi.encode(timestamp, epoch, pubkeyHash, [recipient, deadline, r, s, v,] uint256[8])]
    ▼
-AnonAadhaarAdapter (seed = keccak(APP_SEED, epoch) mod p; 0 ≤ now − ts ≤ 24 h; age; state; signal = beneficiary)
-   → AnonAadhaarGroth16Verifier (pubkeyHash trust root) → Verifier.sol (ecMul/ecAdd + ecPairing 0x08)
+AnonAadhaarAdapter (seed = keccak(APP_SEED, epoch) mod p, epoch current or in grace; 0 ≤ now − ts ≤ MAX_PROOF_AGE; age; state;
+                    signal = beneficiary = taker or an EIP-712-authorised recipient)
+   → AnonAadhaarGroth16Verifier (pubkeyHash ∈ trusted key set) → Verifier.sol (ecMul/ecAdd + ecPairing 0x08)
+   next trade in the epoch: [uint16 33][0x02][nullifier] → 0x2A binding claim, no adapter call
 ```
 
 **Artifact integrity.** `fetch-artifacts.mjs` pins the SHA-256 of `circuit_final.zkey` (612 MB),
@@ -368,7 +441,8 @@ AnonAadhaarAdapter (seed = keccak(APP_SEED, epoch) mod p; 0 ≤ now − ts ≤ 2
 |---|---:|
 | `ecPairing` STATICCALL (4 pairs) | 181,100 (= EIP-1108 181,000 + 100 warm access) |
 | 0x2A verifier call (adapter + Groth16 incl. pairing) | ≈ 265,900 |
-| swap with proof vs the same swap without | ≈ 613,100 vs ≈ 344,700 (overhead ≈ 268,400) |
+| swap with proof vs the same swap without | ≈ 681,300 vs ≈ 393,200 on a cold budget window, ≈ 334,500 warm (overhead ≈ 288k) |
+| next swap in the epoch with a 35-byte binding claim | ≈ 339,500 (≈ 5k over a proof-less swap) |
 
 **Deviations from the Phase-3 brief**
 
@@ -393,9 +467,10 @@ World App / IDKit (production)        local tree + prover (tests, demo, dashboar
       ▼
   { merkle_root, nullifier_hash, proof[8] }
       ▼
-0x2A taker args = [uint16 L][0x01][nullifierHash][abi.encode(merkleRoot, [recipient,] uint256[8])]
+0x2A taker args = [uint16 L][0x01][nullifierHash][abi.encode(merkleRoot, epoch, [recipient, deadline, r, s, v,] uint256[8])]
       ▼
-WorldIDAdapter → IWorldID.verifyProof(root, 1, hashToField(address), nullifierHash, extNullifier, proof)   (STATICCALL)
+WorldIDAdapter → IWorldID.verifyProof(root, 1, hashToField(beneficiary), nullifierHash, externalNullifierFor(epoch), proof)   (STATICCALL)
+      (action rotation optional: actionFor(epoch) = "<action>-<epoch>"; IDKit is asked for that action)
       ▼ production: World ID Router (World Chain / Ethereum / Optimism …)
       ▼ local:      MockWorldIDRouter (group 1, root history, 1 h expiry) → SemaphoreVerifier (vendored, real pairing)
 ```
@@ -414,7 +489,7 @@ publishes its own roots to `MockWorldIDRouter`.
 | `ecPairing` STATICCALL (4 pairs) | 181,100 |
 | `SemaphoreVerifier.verifyProof` (incl. 21k base; MSM over 4 public inputs + pairing) | 239,014 |
 | 0x2A verifier call (adapter + router + verifier) | ≈ 224,500 |
-| swap with a World ID proof vs the same swap without | ≈ 534,600 vs ≈ 315,900 (overhead ≈ 218,700) |
+| swap with a World ID proof vs the same swap without | ≈ 559,400 vs ≈ 334,500 (overhead ≈ 225k); later swaps in the epoch: binding claim ≈ 5k |
 
 The World ID path costs about 50k gas less than the Anon Aadhaar path (4 public inputs instead of 9).
 
@@ -446,3 +521,4 @@ result (`merkle_root`, `nullifier` or `nullifier_hash`, abi-encoded `proof`) to 
 14. World ID: `WorldIDAdapter`, modular 0x2A (`verifierTypes`, typed payloads), `MockWorldIDRouter`, `test/WorldIDAdapter.test.ts`
 15. World ID backend: `packages/world-id` prover (real Semaphore proofs), vendored verifier, Foundry fuzz, demo scenarios 1A/1B
 16. Dashboard: dual-tab ZK Pass (World ID proofs generated in the browser with snarkjs / ZK Aadhaar via the local prover), typed takerData header builder, disassembler PASSED status per proof type, IDKit result import, headless smoke for both tabs
+17. Hardening after the adversarial review (§7d): maxWithdraw sizing + hook fallback, token-bucket surge window, per-window λ budget, binding claims, epoch grace, World ID action rotation, taker authorisation, UIDAI key set
