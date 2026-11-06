@@ -115,6 +115,17 @@ export const proofWordsHex = (proof: bigint[]): Hex => encodePacked(Array(8).fil
  * proof as abi.encode(uint256[8]). The same bytes become the 0x2A payload — no re-encoding of
  * the proof itself.
  */
+/** The legacy (World ID 3.0) orb response item inside an IDKit 4.x result, or the item itself if that is what was passed */
+export function legacyItemFromIdKit(result: any): { merkle_root: string; nullifier?: string; nullifier_hash?: string; proof: string; signal_hash?: string } {
+  if (result && Array.isArray(result.responses)) {
+    const item = result.responses.find((x: any) => x.identifier === "orb") ?? result.responses[0];
+    if (!item) throw new Error("IDKit result has no responses");
+    if (result.protocol_version && result.protocol_version !== "3.0") throw new Error(`IDKit returned a protocol ${result.protocol_version} proof; the on-chain adapter verifies legacy (3.0) orb proofs — request with allow_legacy_proofs`);
+    return item;
+  }
+  return result;
+}
+
 export function fromIdKitResult(r: { merkle_root: string; nullifier?: string; nullifier_hash?: string; proof: string }): {
   root: bigint; nullifierHash: bigint; proof: bigint[];
 } {

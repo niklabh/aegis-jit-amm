@@ -41,7 +41,7 @@ async function main() {
   const wethVault = await at("wethVault", "MockERC4626Vault");
   const adapter = await at("adapter", "AnonAadhaarAdapter");
   const worldIdAdapter = await at("worldIdAdapter", "WorldIDAdapter");
-  const worldIdRouter = await at("worldIdRouter", "MockWorldIDRouter");
+  const worldIdRouter = rec.contracts.worldIdRouter ? await at("worldIdRouter", "MockWorldIDRouter") : null as any;
   const forwarder = await at("forwarder", "AegisZKForwarder");
   const aqua = await at("aqua", "Aqua");
   const A = rec.contracts; const usdcAddr = A.usdc.address, wethAddr = A.weth.address;
@@ -284,28 +284,58 @@ async function main() {
 
   // ---------------- S5 World ID human
   let fee2base: bigint | null = null;
-  if (runs("5")) {
-  banner("5 · Verified human via World ID: 5,000 USDC → WETH (REAL Semaphore depth-30 proof, World ID's verifier)");
-  process.stdout.write(`${C.dim}  Semaphore v3 identity → depth-30 merkle path → Groth16 proving…${C.reset}`);
-  const wp = await generateWorldIdProof({ identity: "human", signal: worldHuman.address, externalNullifier: await worldIdAdapter.currentExternalNullifier(), epoch: await worldIdAdapter.currentEpoch() });
-  process.stdout.write(` done (${wp.provingMs} ms)\n`);
-  if ((await worldIdRouter.latestRoot()) !== BigInt(wp.root)) {
-    const rtx = await worldIdRouter.connect(deployer).registerRoot(BigInt(wp.root)); const rrc = await rtx.wait();
-    console.log(`  ${C.dim}sequencer published the tree root: ${txLink(chainId, rrc.hash)}${C.reset}`);
+  const realWorldId = rec.worldId && rec.worldId.mock === false;
+  // the World ID proof is bound to its signal (the taker address): with an IDKit result the scenario runs as whichever taker it was issued for
+  let s5Taker = worldHuman;
+  if (runs("5") && realWorldId && !process.env.IDKIT_RESULT) {
+    banner("5 · Verified human via World ID — skipped");
+    console.log(`  this deployment verifies against World ID's own router (${rec.worldId!.router}); the local identity tree cannot prove into it.`);
+    console.log(`  Produce a proof with IDKit (dashboard: 🌍 World ID tab → "Verify with World App / Simulator", signal = ${human.address}; or any taker above), download the result JSON and re-run with`);
+    console.log(`  IDKIT_RESULT=path/to/idkit-result.json DEMO_SCENARIOS=5 npx hardhat run --network ${network.name} scripts/demo-sepolia.ts`);
+  } else if (runs("5")) {
+  let wp: { root: string; nullifierHash: string; proof: string[]; provingMs: number; epoch?: bigint };
+  let proofLabel: string;
+  if (realWorldId) {
+    // IDKit result for a legacy (World ID 3.0) orb proof: { responses: [{ merkle_root, nullifier, proof }] } or the flat item
+    banner("5 · Verified human via World ID: 5,000 USDC → WETH (World App / Simulator proof via IDKit, World ID's router)");
+    const raw = JSON.parse(readFileSync(process.env.IDKIT_RESULT!, "utf8"));
+    const item = raw.responses ? raw.responses.find((r: any) => r.identifier === "orb") ?? raw.responses[0] : raw;
+    const nullifier = item.nullifier ?? item.nullifier_hash;
+    const words: bigint[] = typeof item.proof === "string"
+      ? (ethers.AbiCoder.defaultAbiCoder().decode(["uint256[8]"], item.proof)[0] as bigint[]).map(BigInt)
+      : item.proof.map(BigInt);
+    wp = { root: BigInt(item.merkle_root).toString(), nullifierHash: BigInt(nullifier).toString(), proof: words.map(String), provingMs: 0, epoch: await worldIdAdapter.currentEpoch() };
+    proofLabel = `World App / Simulator (IDKit, app ${rec.worldId!.appId}, action ${rec.worldId!.action})`;
+    if (item.signal_hash) {
+      const hashToField = (addr: string) => BigInt(ethers.keccak256(addr)) >> 8n;
+      const match = Object.values(takers).find((t) => hashToField(t.address) === BigInt(item.signal_hash));
+      if (match) s5Taker = match;
+      else console.log(`  ${C.yellow}warning: signal_hash in the IDKit result is none of the taker accounts (expected hashToField(${human.address}) from the dashboard); the adapter will reject it${C.reset}`);
+    }
+  } else {
+    banner("5 · Verified human via World ID: 5,000 USDC → WETH (REAL Semaphore depth-30 proof, World ID's verifier)");
+    process.stdout.write(`${C.dim}  Semaphore v3 identity → depth-30 merkle path → Groth16 proving…${C.reset}`);
+    const p = await generateWorldIdProof({ identity: "human", signal: worldHuman.address, externalNullifier: await worldIdAdapter.currentExternalNullifier(), epoch: await worldIdAdapter.currentEpoch() });
+    process.stdout.write(` done (${p.provingMs} ms)\n`);
+    if ((await worldIdRouter.latestRoot()) !== BigInt(p.root)) {
+      const rtx = await worldIdRouter.connect(deployer).registerRoot(BigInt(p.root)); const rrc = await rtx.wait();
+      console.log(`  ${C.dim}sequencer published the tree root: ${txLink(chainId, rrc.hash)}${C.reset}`);
+    }
+    wp = p; proofLabel = `REAL Semaphore Groth16 · ${p.provingMs} ms`;
   }
-  const worldData = td({ zk: encodeWorldIdProofTakerArgs(wp) });
+  const worldData = td({ zk: encodeWorldIdProofTakerArgs(wp as any) });
   const botQ5 = await quote(bot, AMT, botData);
-  const q5 = await quote(worldHuman, AMT, worldData);
+  const q5 = await quote(s5Taker, AMT, worldData);
   const fee5 = await feeBreakdown(AMT, true);
-  const s5 = await swap(worldHuman, AMT, worldData);
+  const s5 = await swap(s5Taker, AMT, worldData);
   table("0x2A World ID pass (type 1) → 0x7A human tier", [
-    ["proof", `REAL Semaphore Groth16 · ${wp.provingMs} ms · root ${short("0x" + BigInt(wp.root).toString(16))} · nullifierHash ${short("0x" + BigInt(wp.nullifierHash).toString(16))} · signal = ${short(worldHuman.address)}`],
-    ["on-chain verify", "WorldIDAdapter → MockWorldIDRouter (group 1, root history) → World ID's SemaphoreVerifier → ecPairing 0x08"],
+    ["proof", `${proofLabel} · root ${short("0x" + BigInt(wp.root).toString(16))} · nullifierHash ${short("0x" + BigInt(wp.nullifierHash).toString(16))} · signal = ${short(s5Taker.address)}`],
+    ["on-chain verify", realWorldId ? `WorldIDAdapter → World ID Router ${short(rec.worldId!.router)} (group 1) → World ID's SemaphoreVerifier → ecPairing 0x08` : "WorldIDAdapter → MockWorldIDRouter (group 1, root history) → World ID's SemaphoreVerifier → ecPairing 0x08"],
     ["quote() / swap()", `${fmtWeth(q5.amountOut, 6)} / ${fmtWeth(s5.amountOut, 6)} WETH  ${s5.amountOut === q5.amountOut ? C.green + "== quote ✔" + C.reset : C.red + "!= quote" + C.reset} · base fee ${fmtUsdc(fee5.base)} USDC (${fee5.base === AMT * (cfg.baseFeeBps / 2n) / FEE_BPS ? C.green + "human tier ✔" + C.reset : C.red + "not the human tier" + C.reset})`],
     ["same trade as unverified bot (quote)", `${fmtWeth(botQ5.amountOut, 6)} WETH`],
     ["gas", `${n(s5.rc.gasUsed)}  vs ${n(botGas)} baseline → World ID overhead ${n(s5.rc.gasUsed - botGas)}`],
   ]);
-  push({ name: "5 Human · World ID", taker: "Semaphore ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s5.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s5.amountOut), fee: feeLabel(fee5, AMT), gas: s5.rc.gasUsed.toString(), tx: short(s5.rc.hash), status: "filled", link: txLink(chainId, s5.rc.hash) });
+  push({ name: "5 Human · World ID", taker: realWorldId ? "World ID ✔" : "Semaphore ✔", inStr: "5,000 USDC", outStr: `${fmtWeth(s5.amountOut)} WETH`, price: fmtUsdc(AMT * 10n ** 18n / s5.amountOut), fee: feeLabel(fee5, AMT), gas: s5.rc.gasUsed.toString(), tx: short(s5.rc.hash), status: "filled", link: txLink(chainId, s5.rc.hash) });
   void fee2base;
   }
 

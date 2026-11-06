@@ -64,7 +64,7 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
 
   useEffect(() => {
     client.fetchLiveOrder().then(({ order, txHash }) => { setOrder(order); setShipTx(txHash); }).catch((e) => setRpcErr(String(e.message ?? e)));
-    client.snapshot().then(setBaseline).catch(() => {});
+    if (!dep.readOnly) client.snapshot().then(setBaseline).catch(() => {});
     refresh();
     const id = setInterval(refresh, 4000);
     return () => clearInterval(id);
@@ -87,9 +87,12 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
         </div>
         <div className="flex items-center gap-3 text-xs">
           <span className={`px-2 py-1 rounded border ${rpcErr ? "border-rose-600 text-rose-300" : "border-emerald-700 text-emerald-300"}`}>
-            {rpcErr ? `RPC error: ${rpcErr}` : `chain ${dep.chainId} · block #${state?.blockNumber ?? "…"}`}
+            {rpcErr ? `RPC error: ${rpcErr}` : `chain ${dep.chainId} · block #${state?.blockNumber ?? "…"}${dep.readOnly ? " · read-only" : ""}`}
           </span>
-          <button onClick={resetChain} disabled={!baseline} className="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40">Reset chain to page load</button>
+          {dep.explorer && <a href={`${dep.explorer}/address/${dep.addr.router}`} target="_blank" rel="noreferrer" className="px-2 py-1 rounded border border-slate-700 text-slate-300 hover:border-slate-500" title="AegisSwapVMRouter on the block explorer">explorer ↗</a>}
+          {dep.readOnly
+            ? <span className="px-2 py-1 rounded bg-slate-800 text-slate-400" title="public deployment: live quotes, buckets and proofs; swaps run from scripts/demo-sepolia.ts">public deployment · quotes & proofs only</span>
+            : <button onClick={resetChain} disabled={!baseline} className="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40">Reset chain to page load</button>}
         </div>
       </header>
 
@@ -292,12 +295,12 @@ function Simulator({ dep, client, state, humanData, humanLabel, onDone }: { dep:
 
       <div className="flex flex-wrap gap-2 mt-5">
         {profile !== "split" ? (
-          <button onClick={execute} disabled={busy} className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-sm font-medium text-white">
-            {busy ? "Executing…" : "Execute swap() on-chain"}
+          <button onClick={execute} disabled={busy || dep.readOnly} title={dep.readOnly ? "public deployment: swaps run from scripts/demo-sepolia.ts" : undefined} className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-sm font-medium text-white">
+            {busy ? "Executing…" : dep.readOnly ? "Execute swap() — read-only here, use the CLI" : "Execute swap() on-chain"}
           </button>
         ) : (
-          <button onClick={runSplit} disabled={busy} className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-sm font-medium text-white">
-            {busy ? "Running…" : "Run 5-leg split attack (evm_snapshot sandbox)"}
+          <button onClick={runSplit} disabled={busy || dep.readOnly} title={dep.readOnly ? "needs evm_snapshot (local Hardhat node only)" : undefined} className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-sm font-medium text-white">
+            {busy ? "Running…" : dep.readOnly ? "Split attack sandbox — local node only" : "Run 5-leg split attack (evm_snapshot sandbox)"}
           </button>
         )}
       </div>

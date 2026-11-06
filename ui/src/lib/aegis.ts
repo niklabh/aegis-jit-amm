@@ -13,6 +13,10 @@ export type Profile = "human" | "bot" | "split" | "whale";
 export interface Deployment {
   chainId: number;
   rpcUrl: string;
+  /** block explorer base URL for public chains */
+  explorer?: string | null;
+  /** public deployment: quotes and proofs work, swaps / snapshots need a funded signer (scripts/demo-sepolia.ts) */
+  readOnly?: boolean;
   shipBlock: number;
   orderHash: Hex;
   order: Order;
@@ -27,7 +31,12 @@ export interface Deployment {
   zk: { proverUrl: string; epochDuration: number; payloadLength: number; takerHeader: Hex; trustRoot: string; maharashtraPacked: string };
   /** World ID pass config (scripts/seed-local.ts) */
   worldId?: {
-    backend: "semaphore" | "mock";
+    /** "worldid" = the chain's real World ID Router (proofs from World App / the Simulator via IDKit) */
+    backend: "semaphore" | "mock" | "worldid";
+    mock?: boolean;
+    router?: Address;
+    /** IDKit environment: staging apps + the Simulator, or production with World App */
+    environment?: "staging" | "production" | "sandbox";
     appId: string;
     action: string;
     /** action rotation epoch in seconds (0 = one static action) */
@@ -114,10 +123,11 @@ export function createAegisClient(dep: Deployment) {
 
   // ------------------------------------------------------------------ order + disassembler
   async function fetchLiveOrder(): Promise<{ order: Order; txHash: Hex }> {
-    const logs = await pub.getContractEvents({
-      address: dep.addr.aqua, abi: dep.abi.aqua, eventName: "Shipped", fromBlock: BigInt(dep.shipBlock),
-    });
-    const log = (logs as any[]).find((l) => l.args.strategyHash.toLowerCase() === dep.orderHash.toLowerCase());
+    const find = (logs: unknown[]) => (logs as any[]).find((l) => l.args.strategyHash.toLowerCase() === dep.orderHash.toLowerCase());
+    // the record names the ship block: a one-block query works on every public RPC (open ranges are capped); fall back to an open scan
+    const ship = BigInt(dep.shipBlock);
+    let log = find(await pub.getContractEvents({ address: dep.addr.aqua, abi: dep.abi.aqua, eventName: "Shipped", fromBlock: ship, toBlock: ship }));
+    if (!log) log = find(await pub.getContractEvents({ address: dep.addr.aqua, abi: dep.abi.aqua, eventName: "Shipped", fromBlock: ship }));
     if (!log) throw new Error("Shipped event for orderHash not found");
     const [o] = decodeAbiParameters(
       [{ type: "tuple", components: [{ name: "maker", type: "address" }, { name: "traits", type: "uint256" }, { name: "data", type: "bytes" }] }],
@@ -140,7 +150,9 @@ export function createAegisClient(dep: Deployment) {
     }
   }
 
+  const READ_ONLY = "read-only public deployment: the dashboard has no funded signer here. Run the swap with scripts/demo-sepolia.ts (see README, Live on Sepolia).";
   async function swap(p: Profile, amountIn: bigint, dataOverride?: Hex): Promise<SwapResult> {
+    if (dep.readOnly) throw new Error(READ_ONLY);
     const q = await quote(p, amountIn, dataOverride);
     const hash = await wallet.writeContract({
       ...R, functionName: "swap", args: [dep.order, amountIn, dataOverride ?? dataOf(p)], account: takerOf(p), chain, gas: 3_000_000n,
@@ -153,6 +165,7 @@ export function createAegisClient(dep: Deployment) {
 
   /** Sandboxed A/B: single trade vs `parts` equal legs in the same window, then evm_revert. */
   async function splitAttack(total: bigint, parts = 5): Promise<SplitResult> {
+    if (dep.readOnly) throw new Error(READ_ONLY);
     const snap = (await pub.request({ method: "evm_snapshot" as any, params: [] as any })) as Hex;
     try {
       const pre = await readState();
@@ -193,6 +206,7 @@ export function createAegisClient(dep: Deployment) {
   }
 
   async function snapshot(): Promise<Hex> {
+    if (dep.readOnly) throw new Error(READ_ONLY);
     return (await pub.request({ method: "evm_snapshot" as any, params: [] as any })) as Hex;
   }
   async function revert(id: Hex): Promise<boolean> {
@@ -249,7 +263,8 @@ export function createAegisClient(dep: Deployment) {
     return (await pub.readContract({ ...WR(), functionName: "latestRoot", args: [] })) as bigint;
   }
   /** Mirrors the router's requireValidRoot: latest / historical (within the expiry window) / unknown or expired */
-  async function worldIdRootStatus(root: bigint): Promise<"latest" | "historical" | "unknown-or-expired"> {
+  async function worldIdRootStatus(root: bigint): Promise<"latest" | "historical" | "unknown-or-expired" | "world-id-router"> {
+    if (dep.worldId?.backend === "worldid") return "world-id-router"; // the real router keeps its own root history; the adapter call is the check
     if ((await worldIdLatestRoot()) === root) return "latest";
     try { await pub.readContract({ ...WR(), functionName: "requireValidRoot", args: [root] }); return "historical"; }
     catch { return "unknown-or-expired"; }
@@ -277,14 +292,21 @@ export function createAegisClient(dep: Deployment) {
     if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
     return j;
   }
-  async function proverHealth(): Promise<{ ok: boolean; artifacts: boolean } | null> {
+  async function proverHealth(): Promise<{ ok: boolean; artifacts: boolean; worldId?: { configured: boolean; rp_id: string | null; app_id: string | null } } | null> {
     try { return await (await fetch(`${dep.zk.proverUrl}/health`)).json(); } catch { return null; }
+  }
+  /** IDKit `rp_context`: the relying-party request signature, made by the local prover process (the signing key never reaches the browser) */
+  async function worldIdRpContext(action: string): Promise<{ rp_id: string; nonce: string; created_at: number; expires_at: number; signature: string; app_id: string | null }> {
+    const res = await fetch(`${dep.zk.proverUrl}/worldid/rp-context`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
+    return j;
   }
 
   return {
     pub, fetchLiveOrder, quote, swap, splitAttack, readState, snapshot, revert, takerOf,
     currentNullifierSeed, currentEpoch, verifyOnChain, realProofTakerData, prove, testQr, proverHealth,
-    worldIdTakerData, verifyWorldIdOnChain, worldIdLatestRoot, worldIdRootStatus, worldIdExternalNullifier, worldIdCurrentEpoch,
+    worldIdTakerData, verifyWorldIdOnChain, worldIdLatestRoot, worldIdRootStatus, worldIdExternalNullifier, worldIdCurrentEpoch, worldIdRpContext,
   };
 }
 

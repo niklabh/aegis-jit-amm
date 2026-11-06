@@ -2,16 +2,37 @@
 // Local Anon Aadhaar prover service for the AegisJIT dashboard (127.0.0.1 only).
 //   tsx prover/server.ts            (PORT=8547, ALLOW_ORIGIN=http://127.0.0.1:5173)
 //
-//   GET  /health                      -> { ok, artifacts }
+//   GET  /health                      -> { ok, artifacts, worldId: { configured, rp_id, app_id } }
 //   POST /test-qr { timestamp }       -> { digits, png }      synthetic V2 QR signed by the TEST signer
 //   POST /prove   { digits, seed, signal } -> { qr, proof }   zkAadhaar parse + RSA check + Groth16
+//   POST /worldid/rp-context { action } -> IDKit `rp_context`  World ID relying-party request signature
+//        (World ID 4.x IDKit requires every request to be signed server-side with the app's RP signing key;
+//         the key stays in this process, read from WORLD_ID_RP_SIGNING_KEY / the repo .env, never sent to the browser)
 //
 // The QR payload is only ever sent here, to a process on the same machine. Nothing is logged.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
+import { signRequest } from "@worldcoin/idkit-core/signing";
 import { artifactsAvailable, makeTestQr, proveFromQr, sha256 } from "./anon-aadhaar";
 
 const PORT = Number(process.env.PORT ?? 8547);
+
+/** World ID relying-party settings: process env first, then the repo's git-ignored .env */
+function worldIdEnv(): { appId: string; rpId: string; signingKey: string } {
+  const envFile = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".env");
+  const fromFile: Record<string, string> = {};
+  if (existsSync(envFile)) {
+    for (const line of readFileSync(envFile, "utf8").split("\n")) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m) fromFile[m[1]] = m[2].replace(/^["']|["']$/g, "").trim();
+    }
+  }
+  const get = (k: string) => (process.env[k] ?? fromFile[k] ?? "").trim();
+  return { appId: get("WORLD_ID_APP_ID") || get("WORLD_ID_STAGING_APP_ID"), rpId: get("WORLD_ID_RP_ID"), signingKey: get("WORLD_ID_RP_SIGNING_KEY") };
+}
 const ALLOW = (process.env.ALLOW_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173").split(",");
 const MAX_BODY = 64 * 1024;
 
@@ -52,7 +73,19 @@ createServer(async (req, res) => {
     return res.end();
   }
   try {
-    if (req.method === "GET" && req.url === "/health") return send(res, origin, 200, { ok: true, artifacts: artifactsAvailable() });
+    if (req.method === "GET" && req.url === "/health") {
+      const w = worldIdEnv();
+      return send(res, origin, 200, { ok: true, artifacts: artifactsAvailable(), worldId: { configured: Boolean(w.rpId && w.signingKey), rp_id: w.rpId || null, app_id: w.appId || null } });
+    }
+
+    if (req.method === "POST" && req.url === "/worldid/rp-context") {
+      const { action } = await readJson(req);
+      if (typeof action !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(action)) return send(res, origin, 400, { error: "expected { action }" });
+      const w = worldIdEnv();
+      if (!w.rpId || !w.signingKey) return send(res, origin, 503, { error: "World ID RP not configured: set WORLD_ID_RP_ID and WORLD_ID_RP_SIGNING_KEY in .env (Developer Portal → app → RP registration)" });
+      const { sig, nonce, createdAt, expiresAt } = signRequest({ signingKeyHex: w.signingKey.replace(/^0x/, ""), action });
+      return send(res, origin, 200, { rp_id: w.rpId, nonce, created_at: createdAt, expires_at: expiresAt, signature: sig, app_id: w.appId || null });
+    }
 
     if (req.method === "POST" && req.url === "/test-qr") {
       const { timestamp } = await readJson(req);

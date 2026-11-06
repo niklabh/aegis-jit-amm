@@ -6,10 +6,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Address } from "viem";
 import { toHex } from "viem";
+import { IDKitRequestWidget, orbLegacy, type IDKitResult, type RpContext } from "@worldcoin/idkit";
 
 import type { AegisClient, Deployment } from "./lib/aegis";
 import {
-  buildGroup, encodeWorldIdPayload, externalNullifierOf, fromIdKitResult, identityFor, proofWordsHex, proveWorldId, signalHashOf, worldIdActionFor,
+  buildGroup, encodeWorldIdPayload, externalNullifierOf, fromIdKitResult, identityFor, legacyItemFromIdKit, proofWordsHex, proveWorldId, signalHashOf, worldIdActionFor,
   type WorldIdProofResult,
 } from "./lib/worldid";
 import { Badge, Step, short } from "./PassUi";
@@ -33,6 +34,13 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
   const [err, setErr] = useState<string | null>(null);
   const [idkitJson, setIdkitJson] = useState("");
   const [idkit, setIdkit] = useState<{ root: bigint; nullifierHash: bigint; ok: boolean; rootStatus: string; error?: string } | null>(null);
+  // live World ID through IDKit (World App, or the World ID Simulator for staging apps)
+  const realRouter = w.backend === "worldid";
+  const [rpStatus, setRpStatus] = useState<{ configured: boolean; rp_id: string | null; app_id: string | null } | null>(null);
+  const [rpContext, setRpContext] = useState<RpContext | null>(null);
+  const [idkitOpen, setIdkitOpen] = useState(false);
+  const [live, setLive] = useState<{ root: bigint; nullifierHash: bigint; proof: bigint[]; raw: unknown } | null>(null);
+  const [liveErr, setLiveErr] = useState<string | null>(null);
 
   const group = useMemo(() => buildGroup(w.identityPrefix, w.members), [w.identityPrefix, w.members]);
   const id = useMemo(() => identityFor(w.identityPrefix, identity), [w.identityPrefix, identity]);
@@ -45,9 +53,40 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
 
   useEffect(() => {
     fetch(artifactUrl("semaphore.zkey"), { method: "HEAD" }).then((r) => setArtifacts(r.ok)).catch(() => setArtifacts(false));
-    client.worldIdLatestRoot().then(setLatestRoot).catch(() => setLatestRoot(null));
+    if (!realRouter) client.worldIdLatestRoot().then(setLatestRoot).catch(() => setLatestRoot(null));
     client.worldIdCurrentEpoch().then(setEpoch).catch(() => setEpoch(0n));
-  }, [client, w.artifactsBase]);
+    client.proverHealth().then((h) => setRpStatus(h?.worldId ?? { configured: false, rp_id: null, app_id: null })).catch(() => setRpStatus({ configured: false, rp_id: null, app_id: null }));
+  }, [client, w.artifactsBase, realRouter]);
+  const idkitAction = worldIdActionFor(w.action, w.epochDuration ?? 0, epoch);
+
+  async function startIdKit() {
+    setLiveErr(null); setLive(null);
+    try {
+      const ctx = await client.worldIdRpContext(idkitAction);
+      setRpContext({ rp_id: ctx.rp_id, nonce: ctx.nonce, created_at: ctx.created_at, expires_at: ctx.expires_at, signature: ctx.signature });
+      setIdkitOpen(true);
+    } catch (e: any) { setLiveErr(String(e.message ?? e)); }
+  }
+  /** runs inside the widget: decode the legacy orb item and check it against this chain's adapter (eth_call) */
+  async function handleIdKitVerify(result: IDKitResult) {
+    const p = fromIdKitResult(legacyItemFromIdKit(result));
+    const chk = await client.verifyWorldIdOnChain(taker, p);
+    if (!chk.ok) throw new Error("WorldIDAdapter rejected the proof on this chain: wrong root for this router, signal is not the taker address, or app/action differs");
+    setLive({ ...p, raw: result });
+  }
+  function onIdKitSuccess(result: IDKitResult) {
+    const p = fromIdKitResult(legacyItemFromIdKit(result));
+    onAttach({
+      kind: "worldid", label: "World ID · World App", data: client.worldIdTakerData(encodeWorldIdPayload(p.root, epoch, p.nullifierHash, p.proof)),
+      verified: true, beneficiary: taker,
+      worldId: { root: p.root, nullifierHash: p.nullifierHash, signalHash: signalHashOf(taker), externalNullifierHash: externalNullifier, proof: p.proof, identityCommitment: 0n, memberIndex: -1, provingMs: 0 },
+    });
+  }
+  const downloadLive = () => {
+    if (!live) return;
+    const blob = new Blob([JSON.stringify(live.raw, null, 2)], { type: "application/json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "idkit-result.json"; a.click();
+  };
   useEffect(() => {
     if (!busy) return;
     const t0 = performance.now();
@@ -75,7 +114,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
   async function importIdKit() {
     setIdkit(null);
     try {
-      const r = fromIdKitResult(JSON.parse(idkitJson));
+      const r = fromIdKitResult(legacyItemFromIdKit(JSON.parse(idkitJson)));
       const chk = await client.verifyWorldIdOnChain(taker, r);
       setIdkit({ ...r, ok: chk.ok, rootStatus: await client.worldIdRootStatus(r.root) });
     } catch (e: any) { setIdkit({ root: 0n, nullifierHash: 0n, ok: false, rootStatus: "—", error: String(e.message ?? e) }); }
@@ -155,12 +194,57 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
         </Step>
       )}
 
+      <div className="mt-4 border-t border-slate-800 pt-3" data-testid="worldid-idkit">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h3 className="text-sm font-medium text-slate-200">{realRouter ? "Live World ID: World App / Simulator via IDKit" : "World App / Simulator via IDKit (live World ID)"}</h3>
+          <Badge tone={rpStatus === null ? "neutral" : rpStatus.configured ? "good" : "warn"}>
+            {rpStatus === null ? "prover…" : rpStatus.configured ? `RP signer ready · ${rpStatus.rp_id}` : "RP signer not configured (WORLD_ID_RP_ID / WORLD_ID_RP_SIGNING_KEY)"}
+          </Badge>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-1.5">
+          {realRouter
+            ? <>This deployment verifies against World ID's own router at <code>{w.router}</code>; the local tree above cannot prove into it. </>
+            : <>On this local chain the adapter points at <code>MockWorldIDRouter</code>, so a real World ID root will not verify here; the flow still shows the proof. </>}
+          IDKit asks World App (or the Simulator for a <b>{w.environment ?? "staging"}</b> app) for an Orb proof of app <code>{w.appId}</code>,
+          action <code>{idkitAction}</code>, signal = the Verified Human taker <code>{taker}</code>. The request signature comes from the local prover process.
+        </p>
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <button onClick={startIdKit} disabled={!rpStatus?.configured || idkitOpen} data-testid="idkit-start"
+            className="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-40 text-sm text-white">Verify with World App / Simulator</button>
+          {live && <button onClick={downloadLive} className="px-3 py-1.5 rounded-lg border border-slate-700 hover:border-slate-500 text-sm">Download IDKit result (for IDKIT_RESULT=…)</button>}
+        </div>
+        {rpContext && (
+          <IDKitRequestWidget
+            open={idkitOpen}
+            onOpenChange={setIdkitOpen}
+            app_id={w.appId as `app_${string}`}
+            action={idkitAction}
+            action_description="AegisJIT verified-human fee tier"
+            rp_context={rpContext}
+            allow_legacy_proofs={true}
+            environment={(w.environment ?? "staging") as "staging" | "production" | "sandbox"}
+            preset={orbLegacy({ signal: taker })}
+            handleVerify={handleIdKitVerify}
+            onSuccess={onIdKitSuccess}
+            onError={(code) => setLiveErr(`IDKit: ${code}`)}
+          />
+        )}
+        {liveErr && <p className="mt-2 text-xs text-rose-300 break-words" data-testid="idkit-live-error">{liveErr}</p>}
+        {live && (
+          <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-xs font-mono" data-testid="idkit-live">
+            <dt className="text-slate-500 font-sans">merkle root</dt><dd>{short(hex(live.root))} <span className="text-emerald-300 font-sans">✔ WorldIDAdapter accepted it on this chain</span></dd>
+            <dt className="text-slate-500 font-sans">nullifierHash</dt><dd>{short(hex(live.nullifierHash))}</dd>
+            <dt className="text-slate-500 font-sans">proof (8 × uint256)</dt><dd className="break-all text-[10px] leading-4 text-slate-400 max-h-20 overflow-auto">{proofWordsHex(live.proof)}</dd>
+            <dt className="text-slate-500 font-sans">attached</dt><dd className="font-sans">{attached?.kind === "worldid" && attached.label === "World ID · World App" ? "✔ attached to the Verified Human profile" : "—"}</dd>
+          </dl>
+        )}
+      </div>
+
       <details className="mt-4 border-t border-slate-800 pt-3 text-xs">
-        <summary className="cursor-pointer text-slate-300">Production: World App via IDKit</summary>
+        <summary className="cursor-pointer text-slate-300">Paste an IDKit result instead</summary>
         <p className="text-slate-500 mt-2">
-          On a live network the adapter points at the World ID Router and the proof comes from World App:
           IDKit's <code>orbLegacy({"{ signal: <taker address> }"})</code> request for this app / action returns
-          <code> {"{ merkle_root, nullifier, proof }"}</code>. Those bytes form the same type-1 payload — paste a result to encode it:
+          <code> {"{ merkle_root, nullifier, proof }"}</code>. Those bytes form the same type-1 payload — paste a result (or the whole IDKit response) to encode and check it:
         </p>
         <textarea value={idkitJson} onChange={(e) => setIdkitJson(e.target.value)} rows={3} spellCheck={false} data-testid="idkit-json"
           placeholder='{"merkle_root":"0x…","nullifier":"0x…","proof":"0x…(abi.encode(uint256[8]))"}'
@@ -171,6 +255,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
           <p className={`mt-2 ${idkit.ok ? "text-emerald-300" : "text-amber-300"}`} data-testid="idkit-result">
             {idkit.error ? `✘ ${idkit.error}`
               : idkit.ok ? `✔ accepted · root ${short(hex(idkit.root))} (${idkit.rootStatus}) · nullifierHash ${short(hex(idkit.nullifierHash))}`
+              : realRouter ? `✘ rejected by World ID's router: root ${short(hex(idkit.root))} (${idkit.rootStatus}), or the signal is not ${short(taker)}`
               : `✘ not verifiable here: root ${short(hex(idkit.root))} is ${idkit.rootStatus} for MockWorldIDRouter — a real World ID root verifies against the World ID Router on World Chain / Ethereum`}
           </p>
         )}
