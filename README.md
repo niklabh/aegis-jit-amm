@@ -644,6 +644,22 @@ flow has a server side even for a demo:
    names (the dashboard signs for the Verified Human account), because the adapter binds the
    signal to the taker address and rejects the proof from any other account.
 
+**Hosted Simulator vs. the staging portal.** The hosted Simulator at `simulator.worldcoin.org`
+resolves app metadata from the *production* Developer Portal (`developer.world.org`; its
+`vercel.json` pins `NEXT_PUBLIC_DEV_PORTAL_URL` there). An app created in the staging portal
+(`staging-developer.world.org`, where this app lives) is unknown to it: the Simulator reports
+"App not found", and for an IDKit 4.x request with `environment: "staging"` it then reports
+"Production request detected", because its `/api/v4/proof-context` lookup cannot reach the staging
+portal (the page's Content-Security-Policy only allows `developer.world.org`; the staging portal
+itself answers that call with CORS `*`). Two clean ways around it: register the app in
+`developer.world.org` and redeploy `WorldIDAdapter` with that app id
+(`WORLD_ID_APP_ID=app_… WORLD_ID_ROUTER=0x57f9…f611 REDEPLOY=worldIdAdapter ORDER_SALT=1 npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts`,
+then `scripts/ui-deployment.ts` again), or run the open-source Simulator locally with
+`NEXT_PUBLIC_DEV_PORTAL_URL=https://staging-developer.world.org`. The proof
+recorded above was produced by the hosted Simulator after the app metadata that the staging portal
+returns for this app was supplied to the Simulator's page state from the browser console; the test
+identity, the Semaphore proof, the bridge delivery and the on-chain verification are untouched.
+
 Nothing else changes between the chains: signal binding, the Sybil policy, the nullifier binding
 with the 33-byte claim, the envelopes and the fee tier are the same code the Sepolia and local runs
 exercise with the mock router.

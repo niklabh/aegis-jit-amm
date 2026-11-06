@@ -1,0 +1,16 @@
+{
+  "protocol_version": "3.0",
+  "nonce": "0x0029a7e77858e7339e0bc0cb6b18e94657d1cdd2b6214475b4982860bac4ac38",
+  "action": "aegis-jit-fee-tier",
+  "action_description": "AegisJIT verified-human fee tier",
+  "responses": [
+    {
+      "identifier": "orb",
+      "signal_hash": "0x0000b2420c6d0cc6a67588795a9ab624cebb74d80bcba1cafe5145ca1098e673",
+      "proof": "0x066812ba712d0371e66003bea11ea7183a0ce0db109076456f03e8af27e4f1f91d93fec8aa151deb9c2e4eea6da8f613fc762b7814e2d59e84a2af83480836cb04fd0572ab330fd6075f892451acbe4622c2946bed2805eeaedd034ed992d7450c24deac22a6772610fa56fdafc2f32a815185883b522bab3907ead9ded9b93a26c7b72ababea92d1c289fb744494b257a2d8b385eab412a2a7600a4f4038ebb0f0c3549fd4cda6a2ecacade4fff7d8219a985b29d652e83fb3024360ac9c2d718b0bbf3a23e03f36daf3ccd648430afb49a62ca13830a57dcfad8509548c25622f1d170ff4f29050501e6626e1276c20f3882dda38c974a2fcca77af80f9880",
+      "merkle_root": "0x081ba14ad592706c1497650cb671fda0de4a2398406ac4ae5040ebb52624aae1",
+      "nullifier": "0x10bfaafa5c2f1b69ba601f70c356fca621489b97b57518fcc5867eecdf5af110"
+    }
+  ],
+  "environment": "staging"
+}

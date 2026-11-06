@@ -2,6 +2,7 @@
 // Deploys the complete AegisJIT demo stack on a public network (Sepolia) and ships the Maker's strategy.
 //   npx hardhat run --network sepolia scripts/deploy-sepolia.ts
 //   ORDER_SALT=1 npx hardhat run --network sepolia scripts/deploy-sepolia.ts   # reuse the contracts, ship a fresh order
+//   REDEPLOY=worldIdAdapter ORDER_SALT=2 ...                                    # redeploy named contracts (e.g. a new World ID app id) and re-ship
 //   WORLD_ID_ROUTER=0x57f9… npx hardhat run --network worldchainSepolia scripts/deploy-sepolia.ts
 //                                              # real World ID Router instead of the mock; app id from WORLD_ID_APP_ID
 //                                              # (falls back to WORLD_ID_STAGING_APP_ID, then the local placeholder id)
@@ -65,6 +66,8 @@ const isConnectionError = (e: any) => /timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT
 
 interface Partial { network: string; chainId: number; contracts: Record<string, ContractRecord>; params?: any; order?: any; ship?: any }
 const ORDER_SALT = BigInt(process.env.ORDER_SALT ?? "0");
+/** record keys to deploy again even though the record has them (comma-separated), e.g. REDEPLOY=worldIdAdapter after changing the World ID app id */
+const REDEPLOY = (process.env.REDEPLOY ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const partialPath = () => path.join(__dirname, "..", "deployments", network.name, "aegis.partial.json");
 const toJson = (v: unknown) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2);
 
@@ -116,7 +119,7 @@ async function main() {
   };
 
   const deploy = async <T>(key: string, name: string, args: unknown[] = []): Promise<T> => {
-    const existing = partial.contracts[key];
+    const existing = REDEPLOY.includes(key) ? undefined : partial.contracts[key];
     if (existing) {
       existing.constructorArgs = args; // keep the record's args exact (placeholders from a reconstructed checkpoint)
       console.log(`  ${C.dim}↺ ${key.padEnd(18)} ${existing.address}  (already deployed, reused)${C.reset}`);
