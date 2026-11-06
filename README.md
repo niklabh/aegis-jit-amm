@@ -396,6 +396,9 @@ Vite + React + TypeScript + Tailwind + viem. `./scripts/start-local-demo.sh` sta
 `hardhat node`, runs `scripts/seed-local.ts` (writes `ui/public/deployment.json`), and opens
 the UI.
 
+- **About header.** What the project is, the three opcodes with the deployment's own parameters, and links to
+  the repository and to every public deployment's source-verified contracts on its explorer (from the `about`
+  block the seed scripts write into `deployment.json`).
 - **ZK Pass selector.** Two tabs feed the same `0x2A` opcode:
   - **🌍 World ID (Global)** — a Semaphore v3 identity from the local World ID tree, a Groth16
     membership proof generated **in the browser** (snarkjs over the public depth-30 artifacts,

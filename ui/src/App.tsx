@@ -7,6 +7,7 @@ import {
   type QuoteResult, type SplitResult,
 } from "./lib/aegis";
 import { ZkPass, type AttachedProof } from "./ZkPass";
+import { About } from "./About";
 
 const KIND_STYLE: Record<FrameKind, { chip: string; text: string; ring: string; label: string }> = {
   zk: { chip: "bg-emerald-500/15 border-emerald-500/50", text: "text-emerald-300", ring: "ring-emerald-400", label: "0x2A ZK guard" },
@@ -96,6 +97,7 @@ function Dashboard({ dep, client }: { dep: Deployment; client: AegisClient }) {
         </div>
       </header>
 
+      <div className="px-6 pt-6"><About dep={dep} /></div>
       <main className="grid grid-cols-1 xl:grid-cols-2 gap-6 p-6">
         {order ? <Disassembler dep={dep} order={order} shipTx={shipTx} zk={attached} /> : <Card title="SwapVM bytecode"><p className="text-slate-500 text-sm">Fetching order from Aqua Shipped event…</p></Card>}
         <div className="flex flex-col gap-6">

@@ -12,7 +12,7 @@
     "predev": "node scripts/copy-wasm.mjs",
     "prebuild": "node scripts/copy-wasm.mjs",
     "smoke:public": "tsx scripts/smoke-public.ts",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy --config wrangler.toml"
   },
   "dependencies": {
     "@semaphore-protocol/group": "3.15.2",

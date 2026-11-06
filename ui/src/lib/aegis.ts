@@ -17,6 +17,11 @@ export interface Deployment {
   explorer?: string | null;
   /** public deployment: quotes and proofs work, swaps / snapshots need a funded signer (scripts/demo-sepolia.ts) */
   readOnly?: boolean;
+  /** header links: repository and every public deployment record (explorer, README section, contract addresses) */
+  about?: {
+    repo: string; readme: string; event?: string;
+    deployments: { network: string; label: string; chainId: number; explorer: string | null; readme: string; realWorldId: boolean; contracts: Record<string, string>; orderHash: string; shipTx: string; shipBlock?: number; deployedAt?: string }[];
+  };
   shipBlock: number;
   orderHash: Hex;
   order: Order;

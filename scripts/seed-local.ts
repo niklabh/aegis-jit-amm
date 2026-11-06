@@ -5,6 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { deployAegis, MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH, WORLD_ID_MEMBERS, worldIdArtifactsAvailable } from "../test/utils/aegisFixture";
+import { aboutSection } from "./lib/deployment";
 
 const hre = require("hardhat");
 const { ethers } = hre;
@@ -51,6 +52,7 @@ async function main() {
       whale: await whale.getAddress(),
     },
     // USDC -> WETH exactIn taker data per profile (amount-independent)
+    about: aboutSection(),
     zk: {
       proverUrl: "http://127.0.0.1:8547",
       epochDuration: EPOCH,

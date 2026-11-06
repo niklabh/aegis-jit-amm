@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { MAHARASHTRA_PACKED, TEST_SIGNER_PUBKEY_HASH, WORLD_ID_MEMBERS, encodeRealProofTakerArgs, generateRealProof } from "../test/utils/aegisFixture";
 import { TakerTraitsLib } from "../test/utils/SwapVMHelpers";
-import { explorerBase, loadRecord, takerWallets } from "./lib/deployment";
+import { explorerBase, loadRecord, takerWallets, aboutSection } from "./lib/deployment";
 
 const hre = require("hardhat");
 const { ethers, network } = hre;
@@ -51,6 +51,7 @@ async function main() {
       ...(A.semaphoreVerifier ? { semaphoreVerifier: A.semaphoreVerifier.address, semaphoreReal: A.semaphoreVerifier.address } : {}),
     },
     accounts: { maker: rec.maker, human: takers.human.address, bot: takers.bot.address, whale: takers.whale.address, worldHuman: takers.worldHuman.address },
+    about: aboutSection(),
     zk: {
       proverUrl: "http://127.0.0.1:8547",
       epochDuration: Number(rec.cfg.epochDuration),

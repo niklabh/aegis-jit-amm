@@ -87,3 +87,29 @@ export function explorerBase(chainId: number): string | null {
 
 export const addressLink = (chainId: number, a: string) => { const b = explorerBase(chainId); return b ? `${b}/address/${a}` : a; };
 export const txLink = (chainId: number, h: string) => { const b = explorerBase(chainId); return b ? `${b}/tx/${h}` : h; };
+
+// ------------------------------------------------------------------ dashboard "About" block
+export const REPO_URL = "https://github.com/niklabh/aegis-jit-amm";
+const PUBLIC_NETWORKS: Record<string, { label: string; readme: string }> = {
+  worldchainSepolia: { label: "World Chain Sepolia", readme: "#live-on-world-chain-sepolia-real-world-id-router" },
+  sepolia: { label: "Ethereum Sepolia", readme: "#live-on-sepolia" },
+};
+/**
+ * `about` for ui/public/deployment.json: repository links and every public deployment record present under deployments/,
+ * each with its explorer, README section and contract addresses, so the dashboard header can link to them on any chain.
+ */
+export function aboutSection() {
+  const deployments = Object.entries(PUBLIC_NETWORKS)
+    .filter(([n]) => fs.existsSync(recordPath(n)))
+    .map(([n, meta]) => {
+      const r = loadRecord(n);
+      const contracts: Record<string, string> = Object.fromEntries(Object.entries(r.contracts).map(([k, c]) => [k, c.address]));
+      const realWorldId = Boolean(r.worldId?.router && !r.worldId.mock);
+      if (realWorldId) contracts.worldIdRouter = r.worldId!.router;
+      return {
+        network: n, label: meta.label, chainId: r.chainId, explorer: explorerBase(r.chainId), readme: `${REPO_URL}${meta.readme}`,
+        realWorldId, contracts, orderHash: r.orderHash, shipTx: r.ship.txHash, shipBlock: Number(r.ship.blockNumber), deployedAt: r.deployedAt,
+      };
+    });
+  return { repo: REPO_URL, readme: `${REPO_URL}#readme`, event: "ETHGlobal Mumbai 2026", deployments };
+}
