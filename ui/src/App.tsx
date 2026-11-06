@@ -241,7 +241,9 @@ function Simulator({ dep, client, state, humanData, humanLabel, onDone }: { dep:
   const prior = model?.priorFlow ?? 0n;
   const scale = Number(thr) > 0 ? Math.max(Number(prior + amountIn), Number(thr) * 1.25) : 1;
   const pctOf = (v: bigint) => `${Math.min(100, (Number(v) / scale) * 100)}%`;
-  const remaining = state && model?.windowActive ? Number(state.window.start + BigInt(dep.cfg.decayWindowSec) - state.timestamp) : null;
+  // fixed-grid bucket: the flow leaks one threshold at every window boundary since the window opened, so the time that
+  // matters is the time to the NEXT boundary, not to the end of the first window (which may be long past)
+  const remaining = state && model?.windowActive ? Number(BigInt(dep.cfg.decayWindowSec) - (state.timestamp - state.window.start) % BigInt(dep.cfg.decayWindowSec)) : null;
 
   return (
     <Card title="Trade & quote simulator · USDC → WETH">
@@ -278,7 +280,7 @@ function Simulator({ dep, client, state, humanData, humanLabel, onDone }: { dep:
 
       <div className="mt-5">
         <div className="flex justify-between text-[11px] text-slate-400 mb-1">
-          <span>Rolling-window surge accumulator {model?.windowActive ? `· ${remaining}s left` : "· window idle (next trade opens it)"}</span>
+          <span>Rolling-window surge accumulator {model?.windowActive ? `· next leak in ${remaining}s` : "· window idle (next trade opens it)"}</span>
           <span className="font-mono">{usdc(prior, 0)} + {usdc(amountIn, 0)} / threshold {usdc(thr, 0)} USDC</span>
         </div>
         <div className="relative h-4 rounded bg-slate-800 overflow-hidden">
