@@ -610,11 +610,30 @@ Taker accounts used by the live run:
 - World ID: the chain's World ID Router (0x57f928158C3EE7CDad1e4D8642503c4D0201f611); proofs come from World App / the World ID Simulator via IDKit for app app_2d47490f3897300939bf0fab0426cf79, action aegis-jit-fee-tier.
 - ZK Aadhaar: real Anon Aadhaar v2 Groth16 verifier; trust root = the public AegisJIT TEST signer, NOT UIDAI.
 - Order deadline: 30 days after deployment.
+
+Live run of `scripts/demo-sepolia.ts` on 2026-11-06:
+
+| Scenario | Taker | In | Out | USDC/WETH | Fee | Gas | Tx | Result |
+|---|---|---|---|---|---|---|---|---|
+| 0 Warm-up bot | unverified | 1,000 USDC | 0.3986 WETH | 2,508.77 | 0.300% | 393,916 | [0xf29cf186…896db992](https://sepolia.worldscan.org/tx/0xf29cf1861b3eb1442781d7ddd7451a53bc9344807b7a4bde1d681e2e896db992) | filled |
+| 1 Bot 5k (baseline) | unverified | 5,000 USDC | 1.9871 WETH | 2,516.28 | 0.300% | 335,172 | [0x4056bc96…d93644a3](https://sepolia.worldscan.org/tx/0x4056bc9667a902dbd2a704c495f16ca34747a563a5094bcf3cc25e81d93644a3) | filled |
+| 2 Human · ZK Aadhaar | Groth16 ✔ | 5,000 USDC | 1.9802 WETH | 2,525.05 | 0.150% | 608,407 | [0xee103225…017369b6](https://sepolia.worldscan.org/tx/0xee103225a691bb37b6cb0e53acc5015e3f030ba3f67cb337ff522902017369b6) | filled |
+| 3 Human · binding claim | binding ✔ | 5,000 USDC | 1.9703 WETH | 2,537.62 | 0.150% | 340,195 | [0xfa937036…8c21bc04](https://sepolia.worldscan.org/tx/0xfa937036730562726c4148e9d9bbfb60be725aff6927bd1c876a1ea68c21bc04) | filled |
+| 4 Human · via aggregator | authorised ✔ | 5,000 USDC | 1.9559 WETH | 2,556.36 | 0.390% (0.150% base + 0.240% surge) | 632,600 | [0xe5f330ba…503e8089](https://sepolia.worldscan.org/tx/0xe5f330ba53c0103c129eaf560ef0e145b2787d4f9049a07d3bbcdd8e503e8089) | filled |
+| 5 Human · World ID | World ID ✔ | 5,000 USDC | 1.9276 WETH | 2,593.96 | 1.350% (0.150% base + 1.200% surge) | 582,213 | [0x9a7b19df…cc23a0e5](https://sepolia.worldscan.org/tx/0x9a7b19df035979a24eb660da2de7631b64d947a6d9a01210a4beb9f9cc23a0e5) | filled |
+| 6 Arb bot 50k | unverified | 50,000 USDC | 18.7431 WETH | 2,667.64 | 1.500% (0.300% base + 1.200% surge) | 335,184 | [0x25f053fa…c2ab0a76](https://sepolia.worldscan.org/tx/0x25f053fa58713a03f412a72693b5b428a3e47e1acc72bb3f01ae6327c2ab0a76) | filled |
+| 7 Split 5x10k | unverified | 50,000 USDC | 17.8653 WETH | 2,798.72 | 1.500% | 1,675,920 | [5 txs](https://sepolia.worldscan.org/tx/0x10a7ecef313d96c21ab85b77861bee72af30b19cc5f9fa56791f9219caaa98da) | no gain |
+| 8 Whale 500k | unverified | 500,000 USDC | 0 WETH | — | — | 94,405 | [0xdfcd1fb6…d3c61ffb](https://sepolia.worldscan.org/tx/0xdfcd1fb6170a046f21670e77ac0cd18a8dd04f20327c0f3ed181231fd3c61ffb) | blocked 0x9A |
+| 9 Whale split 4x25% | unverified | 4 txs | 88.2930 WETH | — | — | — | [4 txs](https://sepolia.worldscan.org/tx/0x9e8d41edcdcd1367bf6529a91bb7a20d2951e68bc25c8f99f180a4afeaf04b09) | 1 of 4 filled |
 <!-- /worldchainSepolia:deployment -->
 
-Deployment and verification cost about 0.02 ETH. Scenarios 0–4 and 6–9 of `scripts/demo-sepolia.ts`
-run here unchanged (the Aadhaar pass and the binding claim do not depend on the chain); scenario 5
-needs a World ID proof and is skipped until one is supplied with `IDKIT_RESULT` (below).
+The live run above is `scripts/demo-sepolia.ts` on World Chain Sepolia with the Simulator's proof
+supplied as `IDKIT_RESULT=deployments/worldchainSepolia/idkit-result.json`. Scenario 5 is a
+5,000 USDC swap by the Verified Human taker whose World ID proof `WorldIDAdapter` verified through
+the chain's World ID Router: quote == swap, human-tier base fee, 582,213 gas against the 335,172
+proof-less baseline (World ID overhead 247,041, in line with the ~240k measured against the mock
+router). The other scenarios are the same code paths as on Sepolia. Deployment, verification and
+the run cost about 0.02 ETH of the 0.09 funded; the takers' swaps ran on their own 0.005 ETH.
 
 **World ID through IDKit.** IDKit 4.x signs every request with the app's relying-party key, so the
 flow has a server side even for a demo:
@@ -640,9 +659,10 @@ flow has a server side even for a demo:
    success; the proof is then attached to the Verified Human profile, the quote drops to the human
    tier, and **Download IDKit result** saves the JSON.
 4. `IDKIT_RESULT=idkit-result.json DEMO_SCENARIOS=5 npx hardhat run --network worldchainSepolia scripts/demo-sepolia.ts`
-   executes the swap with that proof. The scenario runs as the taker the proof's `signal_hash`
-   names (the dashboard signs for the Verified Human account), because the adapter binds the
-   signal to the taker address and rejects the proof from any other account.
+   executes the swap with that proof (the recorded run used the committed
+   `deployments/worldchainSepolia/idkit-result.json`). The scenario runs as the taker the proof's
+   `signal_hash` names (the dashboard signs for the Verified Human account), because the adapter
+   binds the signal to the taker address and rejects the proof from any other account.
 
 **Hosted Simulator vs. the staging portal.** The hosted Simulator at `simulator.worldcoin.org`
 resolves app metadata from the *production* Developer Portal (`developer.world.org`; its
