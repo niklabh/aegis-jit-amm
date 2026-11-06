@@ -398,6 +398,47 @@ async function main() {
     ]);
     results.push({ name: "3 Toxic whale", tier: C.yellow + "unverified" + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: "0 WETH",
       price: "—", fee: "—", gas, hash, status: C.red + "blocked 0x9A" + C.reset });
+
+    // 3b · the whale splits the drain into four max-cap executions inside ONE block (sandboxed, state restored)
+    banner("3b · Same whale, split into 4 x 25%-of-vault executions in ONE block");
+    const snap3 = await rpc("evm_snapshot");
+    // scenarios 1-2 already spent part of this window's budget; start the whale on a full one
+    await rpc("evm_increaseTime", [env.cfg.exposureWindowSec + 1]);
+    await rpc("evm_mine");
+    console.log(`${C.dim}  fast-forward one ${env.cfg.exposureWindowSec}s budget window so the whale starts with the full λ budget${C.reset}`);
+    const v = await env.vaultAssets();
+    const dataOut = env.takerData({ tokenIn: env.addr.usdc, exactIn: false });
+    await rpc("evm_setAutomine", [false]);
+    let vaultLeft = v.weth;
+    const legs: Array<{ cap: bigint; hash: string }> = [];
+    for (let i = 0; i < 4; i++) {
+      const cap = vaultLeft * BigInt(env.cfg.lambdaBps) / 10_000n;
+      const tx = await router.connect(whale).swap(env.order, cap, dataOut, { gasLimit: 1_500_000 });
+      legs.push({ cap, hash: tx.hash });
+      vaultLeft -= cap;
+    }
+    await rpc("evm_mine");
+    await rpc("evm_setAutomine", [true]);
+    const legRows: string[][] = [];
+    let filled = 0;
+    for (const [i, l] of legs.entries()) {
+      const rc = await ethers.provider.getTransactionReceipt(l.hash);
+      if (rc!.status === 1) filled++;
+      legRows.push([`leg ${i + 1}/4`, `${fmtWeth(l.cap, 4)} WETH`, rc!.status === 1 ? C.green + "filled" + C.reset : C.red + "reverted JITExposureBudgetExceeded" + C.reset, short(l.hash)]);
+    }
+    const vAfter = await env.vaultAssets();
+    const [, spent, refBacking] = await router.exposureWindow(env.orderHash, env.addr.weth);
+    grid(["Same-block split (exactOut)", "Wants", "Result", "Tx"], legRows);
+    table("0x9A exposure budget: λ of the backing per window, however many executions", [
+      ["filled", `${filled} of 4`],
+      ["WETH that left the vault", `${fmtWeth(v.weth - vAfter.weth, 4)} of ${fmtWeth(v.weth, 4)} = ${pct(v.weth - vAfter.weth, v.weth)}  (budget ${env.cfg.lambdaBps / 100}% per ${env.cfg.exposureWindowSec}s window)`],
+      ["budget bucket", `${fmtWeth(spent, 4)} WETH spent of ${fmtWeth(refBacking * BigInt(env.cfg.lambdaBps) / 10_000n, 4)}; leaks one budget per window, never resets`],
+      ["without the budget (per-execution cap only)", `4 legs would have drained ${pct(v.weth - vaultLeft, v.weth)} of the vault in this block`],
+    ]);
+    if (filled !== 1) throw new Error("exposure budget invariant violated");
+    await rpc("evm_revert", [snap3]);
+    results.push({ name: "3b Whale split 4x25%", tier: C.yellow + "unverified" + C.reset, inStr: "4 txs, 1 block", outStr: `${fmtWeth(v.weth - vAfter.weth)} WETH`,
+      price: "—", fee: "—", gas: "—", hash: "sandboxed", status: C.green + "1 of 4 filled" + C.reset });
   }
 
 

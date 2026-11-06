@@ -17,7 +17,7 @@ export interface Deployment {
   orderHash: Hex;
   order: Order;
   cfg: {
-    usdcLiquidity: string; wethLiquidity: string; lambdaBps: number; virtualBoostBps: number;
+    usdcLiquidity: string; wethLiquidity: string; lambdaBps: number; virtualBoostBps: number; exposureWindowSec: number;
     baseFeeBps: number; maxSurgeFeeBps: number; impactThresholdBps: string; decayWindowSec: number;
   };
   addr: Record<"aqua" | "router" | "hook" | "usdc" | "weth" | "usdcVault" | "wethVault" | "adapter" | "anonAadhaar" | "groth16" | "pairingVerifier" | "forwarder" | "maker", Address>
@@ -388,11 +388,13 @@ export function disassemble(program: Hex, cfgDecimals?: { tokenA: Address; usdc:
         f.name = "JITVaultReserves"; f.kind = "jit";
         const lambda = uint(b, a + 40, a + 44), boost = uint(b, a + 44, a + 50);
         const refA = uint(b, a + 50, a + 66), refB = uint(b, a + 66, a + 82);
+        const expWin = uint(b, a + 82, a + 86);
         const offA = refA * (boost - 10_000n) / 10_000n, offB = refB * (boost - 10_000n) / 10_000n;
         const fmt = (v: bigint, isUsdc: boolean) => `${(Number(v) / 10 ** (isUsdc ? USDC_DEC : WETH_DEC)).toLocaleString()} ${isUsdc ? "USDC" : "WETH"}`;
         f.fields.push(
           ["vaultA", addr(b, a)], ["vaultB", addr(b, a + 20)],
-          ["lambdaBps", `${lambda} (${pctBps(lambda, 10_000n)} max exposure / execution)`],
+          ["lambdaBps", `${lambda} (${pctBps(lambda, 10_000n)} max exposure per execution and per window)`],
+          ["exposureWindowSec", expWin === 0n ? "0 (per-execution cap only)" : `${expWin} s budget window (token bucket, leaks one budget per window)`],
           ["virtualBoostBps", `${boost} (${Number(boost) / 10_000}x)`],
           ["virtual offset A", `+${fmt(offA, usdcIsA)} (constant)`],
           ["virtual offset B", `+${fmt(offB, !usdcIsA)} (constant)`],

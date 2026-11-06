@@ -58,7 +58,7 @@ describe("AegisJIT", function () {
         vault0: p.vault0!, vault1: p.vault1!, jitHook: p.jitHook!, deadline: p.deadline!,
         zkVerifierTypes: p.zkVerifierTypes!, worldIdVerifier: p.worldIdVerifier!, aadhaarVerifier: p.aadhaarVerifier!,
         zkMode: p.zkMode, requiredStateCode: p.requiredStateCode ?? 0,
-        lambdaBps: p.lambdaBps, virtualBoostBps: p.virtualBoostBps,
+        lambdaBps: p.lambdaBps, virtualBoostBps: p.virtualBoostBps, exposureWindowSec: p.exposureWindowSec!,
         allocation0: p.allocation0, allocation1: p.allocation1,
         floor01AmountIn: p.floor01!.amountIn, floor01AmountOut: p.floor01!.amountOut,
         floor10AmountIn: p.floor10!.amountIn, floor10AmountOut: p.floor10!.amountOut,
@@ -83,7 +83,7 @@ describe("AegisJIT", function () {
       expect(seen).to.deep.equal([
         [AegisOpcodes.DEADLINE, 5],
         [AegisOpcodes.ZK_IDENTITY_GUARD, 46],
-        [AegisOpcodes.JIT_VAULT_RESERVES, 82],
+        [AegisOpcodes.JIT_VAULT_RESERVES, 86],
         [AegisOpcodes.JUMP_IF_TOKEN_IN, 22],
         [AegisOpcodes.REQUIRE_MIN_RATE_1D, 16],
         [AegisOpcodes.JUMP, 2],
@@ -400,6 +400,56 @@ describe("AegisJIT", function () {
       expect(v).to.deep.equal(a);
       expect(await usdcVault.balanceOf(env.addr.maker)).to.be.gt(0n);
       expect(await wethVault.balanceOf(env.addr.maker)).to.be.gt(0n);
+    });
+
+    it("λ is a budget per window: cumulative withdrawals across executions cannot exceed λ of the backing", async function () {
+      const env = await loadFixture(baseFixture);
+      const { router } = env.contracts;
+      const whale = env.accounts.whale;
+      const data = env.takerData({ tokenIn: env.addr.usdc, exactIn: false });
+      // budget = 25% of 400 WETH = 100 WETH per window, however many executions
+      await env.swap(whale, WETH(60), data);
+      await expect(router.connect(whale).swap(env.order, WETH(50), data))
+        .to.be.revertedWithCustomError(router, "JITExposureBudgetExceeded").withArgs(WETH(50), WETH(40));
+      await env.swap(whale, WETH(40), data);
+      await expect(env.quote(whale, 1n, data)).to.be.revertedWithCustomError(router, "JITExposureBudgetExceeded").withArgs(1n, 0n);
+      // the exactIn path hits the same budget after the curve
+      await expect(env.quote(whale, USDC(5_000), env.takerData({ tokenIn: env.addr.usdc })))
+        .to.be.revertedWithCustomError(router, "JITExposureBudgetExceeded");
+      const [start, outFlow, ref] = await router.exposureWindow(env.orderHash, env.addr.weth);
+      expect(start).to.be.gt(0n);
+      expect([outFlow, ref]).to.deep.equal([WETH(100), WETH(400)]);
+
+      // next window: the bucket leaks one budget and re-anchors on the LIVE backing (300 WETH -> 75 WETH budget)
+      await time.increase(env.cfg.exposureWindowSec + 1);
+      await expect(env.quote(whale, WETH(76), data)).to.be.revertedWithCustomError(router, "JITExposureCapExceeded").withArgs(WETH(76), WETH(75));
+      const s = await env.swap(whale, WETH(75), data);
+      expect(s.amountOut).to.equal(WETH(75));
+      const [, outFlow2, ref2] = await router.exposureWindow(env.orderHash, env.addr.weth);
+      expect([outFlow2, ref2]).to.deep.equal([WETH(75), WETH(300)]);
+    });
+
+    it("a whale splitting the drain into max-cap executions inside ONE block gets exactly one fill", async function () {
+      const env = await loadFixture(baseFixture);
+      const { router } = env.contracts;
+      const whale = env.accounts.whale;
+      const data = env.takerData({ tokenIn: env.addr.usdc, exactIn: false });
+      const v0 = await env.vaultAssets();
+      await ethers.provider.send("evm_setAutomine", [false]);
+      let vault = v0.weth;
+      const txs: any[] = [];
+      for (let i = 0; i < 4; i++) {
+        const cap = vault * 2_500n / 10_000n;
+        txs.push(await router.connect(whale).swap(env.order, cap, data, { gasLimit: 1_500_000 }));
+        vault -= cap;
+      }
+      await ethers.provider.send("evm_mine", []);
+      await ethers.provider.send("evm_setAutomine", [true]);
+      const statuses = [];
+      for (const t of txs) statuses.push((await ethers.provider.getTransactionReceipt(t.hash))!.status);
+      expect(statuses).to.deep.equal([1, 0, 0, 0]);
+      const v1 = await env.vaultAssets();
+      expect(v0.weth - v1.weth).to.equal(v0.weth / 4n); // exactly λ left the vault, not 68%
     });
 
     it("0x9A sizes the cap from ERC-4626 maxWithdraw: an illiquid vault lowers quote and swap together (no divergence)", async function () {

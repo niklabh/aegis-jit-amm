@@ -179,6 +179,8 @@ export interface AegisConfig {
   wethLiquidity: bigint;
   lambdaBps: number;
   virtualBoostBps: number;
+  /** λ budget window: cumulative tokenOut per window <= λ of the backing (0 = per-execution cap only) */
+  exposureWindowSec: number;
   baseFeeBps: number;
   maxSurgeFeeBps: number;
   impactThresholdBps: bigint;
@@ -222,6 +224,7 @@ export const DEFAULT_CONFIG: AegisConfig = {
   wethLiquidity: WETH(400),          // 2,500 USDC / WETH
   lambdaBps: 2_500,                  // λ = 25% of the vault exposed per execution
   virtualBoostBps: 20_000,           // 2.0x virtual depth
+  exposureWindowSec: 600,            // λ is a budget per 10-minute window, across all executions
   baseFeeBps: 3_000_000,             // 0.30% (BPS = 1e9)
   maxSurgeFeeBps: 15_000_000,        // 1.50% marginal above threshold
   impactThresholdBps: 100n,          // surge starts at 1% utilization of balanceIn
@@ -355,6 +358,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     requiredStateCode: cfg.requiredStateCode,
     lambdaBps: cfg.lambdaBps,
     virtualBoostBps: cfg.virtualBoostBps,
+    exposureWindowSec: cfg.exposureWindowSec,
     allocation0: cfg.usdcLiquidity,
     allocation1: cfg.wethLiquidity,
     // Hard floors (defaults): never sell WETH below 2,000 USDC, never buy WETH above 3,000 USDC

@@ -24,7 +24,7 @@ import { VolatilitySurgeFeeArgsBuilder } from "./instructions/VolatilitySurgeFee
 ///   [Deadline 0x0D]?                       strategy expiry (omitted if deadline == 0)
 ///   (Aqua balances preloaded by the router — not an opcode)
 ///   ZKIdentityGuard 0x2A                   tier / gate the taker (World ID and/or ZK Aadhaar proofs)
-///   JITVaultReserves 0x9A                  λ exposure cap + virtual-offset boost (wraps the rest)
+///   JITVaultReserves 0x9A                  λ exposure cap + per-window budget + virtual-offset boost (wraps the rest)
 ///   [JumpIfTokenIn 0x0B → P2]?             two-sided rate floor band (omitted if no floors):
 ///   [RequireMinRate 0x2B (A→B)]?             P1
 ///   [Jump 0x0A → P3]?
@@ -50,6 +50,7 @@ contract AegisJITStrategy {
         uint32 requiredStateCode;    // 0 = any (Aadhaar only)
         uint32 lambdaBps;            // 1e4 = 100%
         uint48 virtualBoostBps;      // 1e4 = 1.0x
+        uint32 exposureWindowSec;    // λ budget window in seconds (0 = cap single executions only)
         uint128 allocation0;         // amount of token0 the Maker ships to Aqua (boost anchor)
         uint128 allocation1;         // amount of token1 the Maker ships to Aqua
         uint64 floor01AmountIn;      // token0 -> token1: maker requires >= In token0 per Out token1
@@ -106,7 +107,7 @@ contract AegisJITStrategy {
         program = bytes.concat(
             p.deadline > 0 ? _ix(AegisOpcodes.DEADLINE, ControlsArgsBuilder.buildDeadline(p.deadline)) : bytes(""),
             _ix(AegisOpcodes.ZK_IDENTITY_GUARD, ZKIdentityGuardArgsBuilder.build(p.zkVerifierTypes, p.zkMode, p.requiredStateCode, p.worldIdVerifier, p.aadhaarVerifier)),
-            _ix(AegisOpcodes.JIT_VAULT_RESERVES, JITVaultReservesArgsBuilder.build(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB))
+            _ix(AegisOpcodes.JIT_VAULT_RESERVES, JITVaultReservesArgsBuilder.build(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB, p.exposureWindowSec))
         );
 
         bool hasFloors = (p.floor01AmountIn | p.floor01AmountOut | p.floor10AmountIn | p.floor10AmountOut) != 0;

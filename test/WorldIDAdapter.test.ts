@@ -294,7 +294,7 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
     await expect(onlyWorld.contracts.strategy.buildProgram({
       maker: p.maker, token0: p.token0, token1: p.token1, vault0: p.vault0!, vault1: p.vault1!, jitHook: p.jitHook!, deadline: p.deadline!,
       zkVerifierTypes: ZKVerifierType.ANY, worldIdVerifier: a, aadhaarVerifier: ethers.ZeroAddress, // bit 2 set, no verifier
-      zkMode: p.zkMode, requiredStateCode: 0, lambdaBps: p.lambdaBps, virtualBoostBps: p.virtualBoostBps,
+      zkMode: p.zkMode, requiredStateCode: 0, lambdaBps: p.lambdaBps, virtualBoostBps: p.virtualBoostBps, exposureWindowSec: p.exposureWindowSec!,
       allocation0: p.allocation0, allocation1: p.allocation1, floor01AmountIn: 0, floor01AmountOut: 0, floor10AmountIn: 0, floor10AmountOut: 0,
       baseFeeBps: p.baseFeeBps, maxSurgeFeeBps: p.maxSurgeFeeBps, impactThresholdBps: p.impactThresholdBps, decayWindowSec: p.decayWindowSec, salt: 0,
     })).to.be.revertedWithCustomError(onlyWorld.contracts.strategy, "ZKIdentityGuardVerifierMismatch");

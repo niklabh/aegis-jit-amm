@@ -59,6 +59,8 @@ export interface AegisStrategyParams {
   requiredStateCode?: number;
   lambdaBps: number;
   virtualBoostBps: number;
+  /** λ budget window in seconds: cumulative tokenOut per window <= λ of the backing (0 = per-execution cap only) */
+  exposureWindowSec?: number;
   /** Amount of token0 the Maker ships to Aqua — anchor for the constant virtual offsets. */
   allocation0: bigint;
   /** Amount of token1 the Maker ships to Aqua. */
@@ -114,17 +116,19 @@ export function encodeZKIdentityGuardArgs(a: ZKIdentityGuardArgs): string {
 }
 
 /**
- * 0x9A — 82 bytes: vaultA(20) | vaultB(20) | lambdaBps(4) | virtualBoostBps(6) | refA(16) | refB(16)
+ * 0x9A — 86 bytes: vaultA(20) | vaultB(20) | lambdaBps(4) | virtualBoostBps(6) | refA(16) | refB(16) | exposureWindowSec(4)
  * A/B sorted by token address. Virtual offsets = (boost - 1) * ref (constant => path-independent curve).
+ * exposureWindowSec > 0 turns λ into a per-window budget (token bucket on a fixed grid); 0 caps single executions only.
  */
 export function encodeJITVaultReservesArgs(
-  vaultA: string, vaultB: string, lambdaBps: number, virtualBoostBps: number, refA: bigint, refB: bigint,
+  vaultA: string, vaultB: string, lambdaBps: number, virtualBoostBps: number, refA: bigint, refB: bigint, exposureWindowSec = 0,
 ): string {
   if (lambdaBps <= 0 || lambdaBps > 10_000) throw new Error(`invalid lambdaBps ${lambdaBps}`);
   if (virtualBoostBps < 10_000) throw new Error(`invalid virtualBoostBps ${virtualBoostBps}`);
+  if (exposureWindowSec < 0 || exposureWindowSec > 0xffffffff) throw new Error(`invalid exposureWindowSec ${exposureWindowSec}`);
   return solidityPacked(
-    ["address", "address", "uint32", "uint48", "uint128", "uint128"],
-    [vaultA, vaultB, lambdaBps, virtualBoostBps, refA, refB],
+    ["address", "address", "uint32", "uint48", "uint128", "uint128", "uint32"],
+    [vaultA, vaultB, lambdaBps, virtualBoostBps, refA, refB, exposureWindowSec],
   );
 }
 
@@ -206,7 +210,7 @@ export class AegisProgramBuilder {
    *  1. Deadline (0x0D)                 — strategy expiry guard (omitted if 0)
    *  2. Aqua balances                   — preloaded by the router (no opcode)
    *  3. ZKIdentityGuard (0x2A)          — tier / gate the taker (World ID and/or ZK Aadhaar proof)
-   *  4. JITVaultReserves (0x9A)         — λ exposure cap + virtual-offset boost (wraps the rest)
+   *  4. JITVaultReserves (0x9A)         — λ exposure cap + per-window budget + virtual-offset boost (wraps the rest)
    *  5. RequireMinRate band (0x0B/0x2B/0x0A/0x2B) — two-sided hard floor (omitted if none)
    *  6. VolatilitySurgeFee (0x7A)       — dynamic LVR fee, human discount
    *  7. XYCSwap (0x11)                  — constant product over boosted reserves
@@ -227,7 +231,7 @@ export class AegisProgramBuilder {
       verifierTypes, mode: p.zkMode, requiredStateCode: p.requiredStateCode ?? 0,
       worldIdVerifier: p.worldIdVerifier, aadhaarVerifier: p.aadhaarVerifier,
     })));
-    parts.push(ix(AegisOpcodes.JIT_VAULT_RESERVES, encodeJITVaultReservesArgs(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB)));
+    parts.push(ix(AegisOpcodes.JIT_VAULT_RESERVES, encodeJITVaultReservesArgs(vaultA, vaultB, p.lambdaBps, p.virtualBoostBps, refA, refB, p.exposureWindowSec ?? 0)));
 
     const f01 = p.floor01 ?? { amountIn: 0n, amountOut: 0n };
     const f10 = p.floor10 ?? { amountIn: 0n, amountOut: 0n };
