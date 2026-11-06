@@ -13,11 +13,14 @@ import {
   AegisProgramBuilder,
   AegisStrategyParams,
   Order,
+  TakerAuth,
   ZKMode,
   ZKVerifierType,
+  encodeAadhaarEnvelope,
   encodeWorldIdProofEnvelope,
   encodeWorldIdTakerArgs,
   encodeZKTakerArgs,
+  signTakerAuthorization,
   worldIdSignalHash,
   zkAttestationHash,
 } from "../../src/aegisProgramBuilder";
@@ -61,6 +64,8 @@ export const UIDAI_2021_PUBKEY_HASH = 180634257026243376436440611978369189108108
 export const MAHARASHTRA_PACKED = 117806301630445265963475277n;
 
 export interface RealProof {
+  /** epoch the proof's nullifierSeed belongs to (set by generateRealProof) */
+  epoch?: bigint;
   digits: string;
   qr: { version: string; rsa: { status: string; key: string | null }; state: string; signedDataSha256: string };
   proof: {
@@ -96,29 +101,24 @@ function runJsonCli(pkgDir: string, args: string[]): Promise<any> {
 }
 
 /** Real pipeline in a subprocess: synthetic V2 Secure QR -> zkAadhaar parse + RSA -> Groth16 (snarkjs) */
-export function generateRealProof(o: { timestamp: number; seed: bigint; signal: string }): Promise<RealProof> {
-  // signal = the beneficiary address the proof commits to
-  return runJsonCli(PROVER_DIR, ["prover/cli.ts", "e2e", "--timestamp", String(o.timestamp), "--seed", o.seed.toString(), "--signal", o.signal]);
+export async function generateRealProof(o: { timestamp: number; seed: bigint; signal: string; epoch?: bigint }): Promise<RealProof> {
+  // signal = the beneficiary address the proof commits to; seed = the adapter's nullifierSeedFor(epoch)
+  const p: RealProof = await runJsonCli(PROVER_DIR, ["prover/cli.ts", "e2e", "--timestamp", String(o.timestamp), "--seed", o.seed.toString(), "--signal", o.signal]);
+  p.epoch = o.epoch ?? 0n;
+  return p;
 }
 
 /**
  * 0x2A taker args for a real proof: [L][nullifier][revealArray][envelope]
- *   envelope = abi.encode(timestamp, uint256[8])             (direct)
- *            | abi.encode(timestamp, recipient, uint256[8])  (via a trusted forwarder)
+ *   envelope = abi.encode(timestamp, epoch, pubkeyHash, uint256[8])                                  (direct)
+ *            | abi.encode(timestamp, epoch, pubkeyHash, recipient, deadline, r, s, v, uint256[8])  (authorised taker)
  */
-export function encodeRealProofTakerArgs(p: RealProof, tamper = false, recipient?: string): string {
+export function encodeRealProofTakerArgs(p: RealProof, opts: { tamper?: boolean; auth?: TakerAuth; epoch?: bigint } = {}): string {
   const ps = p.proof.publicSignals;
   const words = p.proof.groth16Proof.map(BigInt);
-  if (tamper) words[7] = words[7] ^ 1n;
-  const proofBytes = encodeEnvelope(BigInt(ps.timestamp), words, recipient);
+  if (opts.tamper) words[7] = words[7] ^ 1n;
+  const proofBytes = encodeAadhaarEnvelope(BigInt(ps.timestamp), opts.epoch ?? p.epoch ?? 0n, BigInt(ps.pubkeyHash), words, opts.auth);
   return encodeZKTakerArgs(BigInt(ps.nullifier), [BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state)], proofBytes);
-}
-
-export function encodeEnvelope(timestamp: bigint, words: bigint[], recipient?: string): string {
-  const c = ethers.AbiCoder.defaultAbiCoder();
-  return recipient
-    ? c.encode(["uint256", "address", "uint256[8]"], [timestamp, recipient, words])
-    : c.encode(["uint256", "uint256[8]"], [timestamp, words]);
 }
 
 // ---------------------------------------------------------------- World ID (Semaphore v3, depth 30)
@@ -132,6 +132,8 @@ export function worldIdArtifactsAvailable(): boolean {
 }
 
 export interface WorldIdProof {
+  /** epoch of the action the proof was made for (0 unless the adapter rotates actions) */
+  epoch?: bigint;
   root: string;
   nullifierHash: string;
   signalHash: string;
@@ -148,10 +150,12 @@ export interface WorldIdProof {
 const worldIdCli = (args: string[]): Promise<any> => runJsonCli(WORLD_ID_PROVER_DIR, ["prover/cli.ts", ...args]);
 
 /** Real Semaphore depth-30 Groth16 proof (subprocess, ~0.5 s) for a member of the local tree, bound to `signal` */
-export function generateWorldIdProof(o: { identity: string; signal: string; externalNullifier: bigint; members?: string[] }): Promise<WorldIdProof> {
+export async function generateWorldIdProof(o: { identity: string; signal: string; externalNullifier: bigint; members?: string[]; epoch?: bigint }): Promise<WorldIdProof> {
   const args = ["prove", "--identity", o.identity, "--signal", o.signal, "--external-nullifier", o.externalNullifier.toString()];
   if (o.members) args.push("--members", o.members.join(","));
-  return worldIdCli(args);
+  const p: WorldIdProof = await worldIdCli(args);
+  p.epoch = o.epoch ?? 0n;
+  return p;
 }
 
 /** Root of the local tree (what the sequencer publishes to the router) */
@@ -159,11 +163,11 @@ export async function worldIdTreeRoot(members?: string[]): Promise<bigint> {
   return BigInt((await worldIdCli(members ? ["root", "--members", members.join(",")] : ["root"])).root);
 }
 
-/** 0x2A type-1 taker args for a World ID proof: [L][0x01][nullifierHash][abi.encode(root, [recipient,] uint256[8])] */
-export function encodeWorldIdProofTakerArgs(p: WorldIdProof, opts: { tamper?: boolean; recipient?: string } = {}): string {
+/** 0x2A type-1 taker args for a World ID proof: [L][0x01][nullifierHash][abi.encode(root, epoch, [auth,] uint256[8])] */
+export function encodeWorldIdProofTakerArgs(p: WorldIdProof, opts: { tamper?: boolean; auth?: TakerAuth; epoch?: bigint } = {}): string {
   const words = p.proof.map(BigInt);
   if (opts.tamper) words[7] = words[7] ^ 1n;
-  return encodeWorldIdTakerArgs(BigInt(p.nullifierHash), encodeWorldIdProofEnvelope(BigInt(p.root), words, opts.recipient));
+  return encodeWorldIdTakerArgs(BigInt(p.nullifierHash), encodeWorldIdProofEnvelope(BigInt(p.root), opts.epoch ?? p.epoch ?? 0n, words, opts.auth));
 }
 
 /** App-scoped nullifier seed for the Anon Aadhaar adapter */
@@ -200,11 +204,17 @@ export interface AegisConfig {
    * "groth16"     = AnonAadhaarAdapter over AnonAadhaarGroth16Verifier + real BN254 Verifier.sol
    */
   zkBackend: "ecdsa" | "anonAadhaar" | "groth16";
-  groth16TrustRoot: bigint;
+  /** circuit pubkeyHash values the Groth16 verifier trusts (first = primary key) */
+  groth16TrustRoots: bigint[];
   maxProofAge: number;
   adapterRequiredState: bigint;
   /** Anon Aadhaar nullifier epoch (0 = static app seed; >0 = nullifierSeed rotates every epoch) */
   epochDuration: number;
+  /** seconds after an epoch roll during which the previous epoch's proofs are still accepted */
+  epochGrace: number;
+  /** World ID action rotation epoch (0 = one static action) and its grace period */
+  worldIdEpochDuration: number;
+  worldIdEpochGrace: number;
   /** 0x2A proof types the Maker accepts: 1 World ID, 2 ZK Aadhaar, 3 either */
   zkVerifierTypes: number;
   /** World ID app id + action behind the adapter's external nullifier */
@@ -237,10 +247,13 @@ export const DEFAULT_CONFIG: AegisConfig = {
   useVaults: true,
   salt: 0n,
   zkBackend: "ecdsa",
-  groth16TrustRoot: TEST_SIGNER_PUBKEY_HASH,
-  maxProofAge: 24 * 3600,
+  groth16TrustRoots: [TEST_SIGNER_PUBKEY_HASH],
+  maxProofAge: 30 * 24 * 3600,       // a resident re-downloads their Aadhaar QR about this often, not daily
   adapterRequiredState: 0n,
   epochDuration: 0,
+  epochGrace: 600,
+  worldIdEpochDuration: 0,
+  worldIdEpochGrace: 600,
   zkVerifierTypes: ZKVerifierType.ANY,
   worldIdAppId: "app_staging_aegis_jit_mumbai",
   worldIdAction: "aegis-jit-fee-tier",
@@ -279,12 +292,12 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   const anonAadhaar = await deploy<MockGroth16AnonAadhaar>("MockGroth16AnonAadhaar", [await deployer.getAddress()]);
   const pairingVerifier = await deploy<any>("contracts/zk/vendor/anon-aadhaar/Verifier.sol:Verifier");
   const groth16 = await deploy<AnonAadhaarGroth16Verifier>("AnonAadhaarGroth16Verifier", [
-    await pairingVerifier.getAddress(), cfg.groth16TrustRoot,
+    await pairingVerifier.getAddress(), cfg.groth16TrustRoots,
   ]);
   const forwarder = await deploy<AegisZKForwarder>("AegisZKForwarder", [await router.getAddress()]);
   const adapter = await deploy<AnonAadhaarAdapter>("AnonAadhaarAdapter", [
     cfg.zkBackend === "groth16" ? await groth16.getAddress() : await anonAadhaar.getAddress(),
-    AEGIS_NULLIFIER_SEED, cfg.epochDuration, cfg.maxProofAge, cfg.adapterRequiredState, [await forwarder.getAddress()],
+    AEGIS_NULLIFIER_SEED, cfg.epochDuration, cfg.epochGrace, cfg.maxProofAge, cfg.adapterRequiredState,
   ]);
   // World ID stack: router mock (groups, root history) -> Semaphore verifier (World ID's real one, or the
   // soundness double); adapter = 0x2A type-1 verifier
@@ -295,7 +308,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     await semaphoreVerifier.getAddress(), await deployer.getAddress(), WORLD_ID_GROUP, WORLD_ID_INITIAL_ROOT, cfg.rootHistoryExpiry,
   ]);
   const worldIdAdapter = await deploy<WorldIDAdapter>("WorldIDAdapter", [
-    await worldIdRouter.getAddress(), WORLD_ID_GROUP, cfg.worldIdAppId, cfg.worldIdAction, [await forwarder.getAddress()],
+    await worldIdRouter.getAddress(), WORLD_ID_GROUP, cfg.worldIdAppId, cfg.worldIdAction, cfg.worldIdEpochDuration, cfg.worldIdEpochGrace,
   ]);
   const usdcVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await usdc.getAddress(), "Aegis USDC Vault", "avUSDC"]);
   const wethVault = await deploy<MockERC4626Vault>("MockERC4626Vault", [await weth.getAddress(), "Aegis WETH Vault", "avWETH"]);
@@ -392,24 +405,48 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
   }
 
   const chainId: bigint = (await ethers.provider.getNetwork()).chainId;
+  const signers = [deployer, maker, human, bot, whale, worldHuman];
+
+  /** The test signer controlling `address` (beneficiaries sign their own taker authorisations) */
+  async function signerFor(address: string): Promise<Signer> {
+    for (const s of signers) if ((await s.getAddress()).toLowerCase() === address.toLowerCase()) return s;
+    throw new Error(`no signer for ${address}`);
+  }
 
   /**
-   * Identity proof bound to `taker`, encoded as taker instruction args for 0x2A.
+   * EIP-712 TakerAuthorization by `beneficiary` for `authorizedTaker` (an aggregator / forwarder contract),
+   * in the domain of the Aadhaar or World ID adapter. Default deadline: one hour from now.
+   */
+  async function authorizeTaker(
+    beneficiary: string,
+    authorizedTaker: string,
+    opts: { verifier?: "aadhaar" | "worldId"; deadline?: bigint } = {},
+  ): Promise<TakerAuth> {
+    const adapterAddr = opts.verifier === "worldId" ? addr.worldIdAdapter : addr.adapter;
+    const deadline = opts.deadline ?? BigInt((await ethers.provider.getBlock("latest"))!.timestamp) + 3_600n;
+    return signTakerAuthorization(await signerFor(beneficiary), chainId, adapterAddr, authorizedTaker, deadline);
+  }
+
+  /**
+   * Identity proof bound to `taker` (the beneficiary), encoded as taker instruction args for 0x2A.
    *  - ecdsa backend: issuer-signed attestation
-   *  - anonAadhaar backend: Groth16-shaped proof `abi.encode(timestamp, uint256[8])`, registered
-   *    with the mock verifier for exactly (seed, nullifier, timestamp, signal = uint160(taker), reveal)
+   *  - anonAadhaar backend: Groth16-shaped proof registered with the mock verifier for exactly
+   *    (seed, nullifier, timestamp, signal = uint160(taker), reveal), in an (timestamp, epoch, pubkeyHash, proof) envelope
+   *  - groth16 backend: a real proof from the Node prover
+   *  `authorizedTaker` adds the beneficiary's TakerAuthorization for that contract to the envelope.
    */
   async function zkArgs(
     taker: string,
     reveal: RevealArray = MUMBAI_HUMAN_REVEAL,
     nullifier = 0xa11ce5n,
-    opts: { timestamp?: bigint; recipient?: string; seed?: bigint } = {},
+    opts: { timestamp?: bigint; seed?: bigint; epoch?: bigint; authorizedTaker?: string; authDeadline?: bigint; pubkeyHash?: bigint } = {},
   ): Promise<string> {
-    // `taker` is the beneficiary the proof commits to; `recipient` selects the forwarder envelope
-    const seed = opts.seed ?? (await adapter.currentNullifierSeed());
+    const epoch = opts.epoch ?? (await adapter.currentEpoch());
+    const seed = opts.seed ?? (await adapter.nullifierSeedFor(epoch));
+    const auth = opts.authorizedTaker ? await authorizeTaker(taker, opts.authorizedTaker, { deadline: opts.authDeadline }) : undefined;
     if (cfg.zkBackend === "groth16") {
       const ts = opts.timestamp ?? BigInt((await ethers.provider.getBlock("latest"))!.timestamp);
-      return encodeRealProofTakerArgs(await generateRealProof({ timestamp: Number(ts), seed, signal: taker }), false, opts.recipient);
+      return encodeRealProofTakerArgs(await generateRealProof({ timestamp: Number(ts), seed, signal: taker, epoch }), { auth });
     }
     if (cfg.zkBackend === "ecdsa") {
       const hash = zkAttestationHash(chainId, addr.verifier, taker, nullifier, reveal);
@@ -418,11 +455,13 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
     }
     const timestamp = opts.timestamp ?? BigInt((await ethers.provider.getBlock("latest"))!.timestamp);
     const signal = BigInt(taker);
+    const pubkeyHash = opts.pubkeyHash ?? 0n;
     const groth16 = Array.from({ length: 8 }, (_, i) =>
       BigInt(ethers.solidityPackedKeccak256(["uint256", "uint256", "uint256", "uint256"], [signal, nullifier, timestamp, i])),
     ) as unknown as bigint[];
-    await (await anonAadhaar.connect(deployer).registerProof(seed, nullifier, timestamp, signal, reveal, groth16)).wait();
-    const proof = encodeEnvelope(timestamp, groth16, opts.recipient);
+    if (pubkeyHash === 0n) await (await anonAadhaar.connect(deployer).registerProof(seed, nullifier, timestamp, signal, reveal, groth16)).wait();
+    else await (await anonAadhaar.connect(deployer).registerProofWithKey(pubkeyHash, seed, nullifier, timestamp, signal, reveal, groth16)).wait();
+    const proof = encodeAadhaarEnvelope(timestamp, epoch, pubkeyHash, groth16, auth);
     return encodeZKTakerArgs(nullifier, reveal, proof);
   }
 
@@ -438,13 +477,15 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
    */
   async function worldIdArgs(
     taker: string,
-    opts: { person?: string; root?: bigint; recipient?: string; tamper?: boolean; members?: string[] } = {},
+    opts: { person?: string; root?: bigint; tamper?: boolean; members?: string[]; epoch?: bigint; authorizedTaker?: string; authDeadline?: bigint } = {},
   ): Promise<string> {
+    const epoch = opts.epoch ?? (await worldIdAdapter.currentEpoch());
+    const externalNullifier: bigint = await worldIdAdapter.externalNullifierFor(epoch);
+    const auth = opts.authorizedTaker ? await authorizeTaker(taker, opts.authorizedTaker, { verifier: "worldId", deadline: opts.authDeadline }) : undefined;
     if (cfg.worldIdBackend === "semaphore") {
       // Real proof: `person` is an identity seed in the local tree (default "human"); the deployer
       // (sequencer) publishes the tree root to the router if it is not the latest one already.
-      const externalNullifier: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
-      const p = await generateWorldIdProof({ identity: opts.person ?? "human", signal: taker, externalNullifier, members: opts.members });
+      const p = await generateWorldIdProof({ identity: opts.person ?? "human", signal: taker, externalNullifier, members: opts.members, epoch });
       if (opts.root === undefined) {
         if ((await worldIdRouter.latestRoot()) !== BigInt(p.root)) {
           await (await worldIdRouter.connect(deployer).registerRoot(BigInt(p.root))).wait();
@@ -452,21 +493,20 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
       } else {
         p.root = opts.root.toString(); // claim a root the proof was not generated for
       }
-      return encodeWorldIdProofTakerArgs(p, { tamper: opts.tamper, recipient: opts.recipient });
+      return encodeWorldIdProofTakerArgs(p, { tamper: opts.tamper, auth, epoch });
     }
     const person = opts.person ?? taker.toLowerCase();
-    // stands in for the circuit's Poseidon(externalNullifier, identityNullifier)
-    const nullifierHash = BigInt(ethers.solidityPackedKeccak256(["string", "string"], ["aegis-jit/world-id/mock-nullifier", person])) >> 8n;
+    // stands in for the circuit's Poseidon(externalNullifier, identityNullifier): same person + same action => same hash
+    const nullifierHash = BigInt(ethers.solidityPackedKeccak256(["string", "string", "uint256"], ["aegis-jit/world-id/mock-nullifier", person, externalNullifier])) >> 8n;
     const root: bigint = opts.root ?? (await worldIdRouter.latestRoot());
     const signalHash = worldIdSignalHash(taker);
-    const externalNullifier: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
     const words = Array.from({ length: 8 }, (_, i) =>
       BigInt(ethers.solidityPackedKeccak256(
         ["uint256", "uint256", "uint256", "uint256", "uint256"], [root, nullifierHash, signalHash, externalNullifier, i],
       )) >> 8n);
     await (await semaphoreMock.connect(deployer).registerProof(words, [root, nullifierHash, signalHash, externalNullifier])).wait();
     if (opts.tamper) words[7] ^= 1n;
-    return encodeWorldIdTakerArgs(nullifierHash, encodeWorldIdProofEnvelope(root, words, opts.recipient));
+    return encodeWorldIdTakerArgs(nullifierHash, encodeWorldIdProofEnvelope(root, epoch, words, auth));
   }
 
   function takerData(opts: { tokenIn: string; exactIn?: boolean; zk?: BytesLike; threshold?: bigint }): string {
@@ -515,7 +555,7 @@ export async function deployAegis(overrides: Partial<AegisConfig> = {}) {
       worldIdAdapter, worldIdRouter, semaphoreVerifier, semaphoreMock, semaphoreReal, usdcVault, wethVault, quoter,
     },
     addr, tokenA,
-    zkArgs, worldIdArgs, takerData, quote, swap, vaultAssets, aquaBalances,
+    zkArgs, worldIdArgs, authorizeTaker, signerFor, takerData, quote, swap, vaultAssets, aquaBalances,
   };
 }
 

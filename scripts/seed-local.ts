@@ -63,7 +63,8 @@ async function main() {
       backend: REAL_WORLD_ID ? "semaphore" : "mock",
       appId: env.cfg.worldIdAppId,
       action: env.cfg.worldIdAction,
-      externalNullifier: (await env.contracts.worldIdAdapter.EXTERNAL_NULLIFIER()).toString(),
+      epochDuration: env.cfg.worldIdEpochDuration,
+      externalNullifier: (await env.contracts.worldIdAdapter.currentExternalNullifier()).toString(),
       groupId: 1,
       treeDepth: 30,
       // identity seeds of the local tree: Identity(`${identityPrefix}${seed}`) — the dashboard rebuilds the same tree

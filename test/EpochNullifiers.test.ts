@@ -76,7 +76,23 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
       expect((await env.quote(human, USDC(5_000), usdcIn(env, zk))).amountOut).to.be.gt(botQ.amountOut);
 
-      await nextEpoch(); // still fresh (< 24 h), but the seed rotated
+      await nextEpoch(); // still fresh, but the seed rotated ...
+      await time.increase(env.cfg.epochGrace); // ... and the grace period is over
+      const botQ2 = await env.quote(bot, USDC(5_000), usdcIn(env));
+      expect((await env.quote(human, USDC(5_000), usdcIn(env, zk))).amountOut).to.equal(botQ2.amountOut);
+    });
+
+    it("grace period: a previous-epoch proof is accepted during the first EPOCH_GRACE seconds of the new epoch, then rejected", async function () {
+      const env = await loadFixture(epochFixture);
+      const { human, bot } = env.accounts;
+      const h = await human.getAddress();
+      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, mockNullifier(await env.contracts.adapter.currentNullifierSeed()));
+      await nextEpoch(); // 5 s into the next epoch
+      expect(await env.contracts.adapter.isAcceptedEpoch((await env.contracts.adapter.currentEpoch()) - 1n)).to.equal(true);
+      const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
+      expect((await env.quote(human, USDC(5_000), usdcIn(env, zk))).amountOut).to.be.gt(botQ.amountOut); // a proof made just before the roll still lands
+      await time.increase(env.cfg.epochGrace);
+      expect(await env.contracts.adapter.isAcceptedEpoch((await env.contracts.adapter.currentEpoch()) - 1n)).to.equal(false);
       const botQ2 = await env.quote(bot, USDC(5_000), usdcIn(env));
       expect((await env.quote(human, USDC(5_000), usdcIn(env, zk))).amountOut).to.equal(botQ2.amountOut);
     });
@@ -108,13 +124,13 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
     });
   });
 
-  describe("trusted forwarder / aggregator (AegisZKForwarder)", function () {
-    it("a verified human swapping through the forwarder keeps the discount; the nullifier binds to the human, not the forwarder", async function () {
+  describe("authorised takers: aggregators / relayers (AegisZKForwarder as the reference)", function () {
+    it("a verified human swapping through an authorised forwarder keeps the discount; the nullifier binds to the human, not the forwarder", async function () {
       const env = await loadFixture(epochFixture);
       const { human, bot } = env.accounts;
       const h = await human.getAddress();
       const n = mockNullifier(await env.contracts.adapter.currentNullifierSeed());
-      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, n, { recipient: h });
+      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, n, { authorizedTaker: env.addr.forwarder }); // EIP-712 TakerAuthorization for the forwarder
       const data = forwardedData(env, h, zk);
 
       const viaForwarder = await quoteAs(env, env.addr.forwarder, USDC(5_000), data);
@@ -132,7 +148,7 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const env = await loadFixture(epochFixture);
       const { human, bot } = env.accounts;
       const h = await human.getAddress();
-      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 7n, { recipient: h });
+      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 7n, { authorizedTaker: env.addr.forwarder });
       const data = forwardedData(env, h, zk);
       await env.contracts.usdc.connect(bot).approve(env.addr.forwarder, USDC(5_000));
       await expect(env.contracts.forwarder.connect(bot).swapExactIn(env.order, env.addr.usdc, USDC(5_000), data))
@@ -143,31 +159,55 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const env = await loadFixture(epochFixture);
       const { human, bot } = env.accounts;
       const h = await human.getAddress();
-      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 8n, { recipient: h });
+      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 8n, { authorizedTaker: env.addr.forwarder });
       const toBot = forwardedData(env, await bot.getAddress(), zk);
       await env.contracts.usdc.connect(human).approve(env.addr.forwarder, USDC(5_000));
       await expect(env.contracts.forwarder.connect(human).swapExactIn(env.order, env.addr.usdc, USDC(5_000), toBot))
         .to.be.revertedWithCustomError(env.contracts.forwarder, "ForwarderOutputNotToCaller");
     });
 
-    it("recipient envelopes only work from adapter-whitelisted forwarders (untrusted relayer or direct call => bot tier)", async function () {
+    it("an authorisation names ONE taker: another contract presenting it is priced as a bot, until the human authorises that one too; a bot calling directly never qualifies", async function () {
       const env = await loadFixture(epochFixture);
       const { human, bot } = env.accounts;
       const h = await human.getAddress();
-      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 9n, { recipient: h });
+      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 9n, { authorizedTaker: env.addr.forwarder }); // signed for the reference forwarder only
       const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
 
-      // a second, non-whitelisted forwarder
+      // a second forwarder (same code, different address) was never authorised
       const rogue = await (await ethers.getContractFactory("AegisZKForwarder")).deploy(env.addr.router);
+      const rogueAddr = await rogue.getAddress();
       const rogueData = TakerTraitsLib.build({
-        taker: await rogue.getAddress(), to: h, isExactIn: true,
+        taker: rogueAddr, to: h, isExactIn: true,
         isAToB: env.addr.usdc.toLowerCase() === env.tokenA.toLowerCase(), useTransferFromAndAquaPush: true, instructionsArgs: zk,
       });
       const viaRogue = await forwardSwap(env, human, USDC(5_000), rogueData, rogue);
       expect(viaRogue.amountOut).to.be.lte(botQ.amountOut);
 
+      // ... whereas an explicit authorisation for it (no whitelist anywhere) gets the tier
+      const zkRogue = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 9n, { authorizedTaker: rogueAddr });
+      const rogueData2 = TakerTraitsLib.build({
+        taker: rogueAddr, to: h, isExactIn: true,
+        isAToB: env.addr.usdc.toLowerCase() === env.tokenA.toLowerCase(), useTransferFromAndAquaPush: true, instructionsArgs: zkRogue,
+      });
+      const botQ2 = await env.quote(bot, USDC(5_000), usdcIn(env));
+      expect(await quoteAs(env, rogueAddr, USDC(5_000), rogueData2)).to.be.gt(botQ2.amountOut);
+
       // bot calling the router directly with an envelope naming the human
-      expect((await env.quote(bot, USDC(5_000), usdcIn(env, zk))).amountOut).to.equal((await env.quote(bot, USDC(5_000), usdcIn(env))).amountOut);
+      expect((await env.quote(bot, USDC(5_000), usdcIn(env, zk))).amountOut).to.equal(botQ2.amountOut);
+    });
+
+    it("an authorisation expires at its deadline", async function () {
+      const env = await loadFixture(epochFixture);
+      const { human, bot } = env.accounts;
+      const h = await human.getAddress();
+      const deadline = BigInt(await time.latest()) + 60n;
+      const zk = await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, 12n, { authorizedTaker: env.addr.forwarder, authDeadline: deadline });
+      const data = forwardedData(env, h, zk);
+      const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
+      expect(await quoteAs(env, env.addr.forwarder, USDC(5_000), data)).to.be.gt(botQ.amountOut);
+      await time.increaseTo(deadline + 1n);
+      const botQ2 = await env.quote(bot, USDC(5_000), usdcIn(env));
+      expect(await quoteAs(env, env.addr.forwarder, USDC(5_000), data)).to.equal(botQ2.amountOut);
     });
 
     it("Sybil through the forwarder: the same nullifier for a second wallet is priced as a bot", async function () {
@@ -175,8 +215,8 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const { human, whale: alt, bot } = env.accounts;
       const h = await human.getAddress(), a = await alt.getAddress();
       const n = mockNullifier(await env.contracts.adapter.currentNullifierSeed());
-      await forwardSwap(env, human, USDC(5_000), forwardedData(env, h, await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, n, { recipient: h })));
-      const altData = forwardedData(env, a, await env.zkArgs(a, MUMBAI_HUMAN_REVEAL, n, { recipient: a }));
+      await forwardSwap(env, human, USDC(5_000), forwardedData(env, h, await env.zkArgs(h, MUMBAI_HUMAN_REVEAL, n, { authorizedTaker: env.addr.forwarder })));
+      const altData = forwardedData(env, a, await env.zkArgs(a, MUMBAI_HUMAN_REVEAL, n, { authorizedTaker: env.addr.forwarder }));
       const altQ = await quoteAs(env, env.addr.forwarder, USDC(5_000), altData);
       expect(altQ).to.equal((await env.quote(bot, USDC(5_000), usdcIn(env))).amountOut);
     });
@@ -195,28 +235,31 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const { adapter } = env.contracts;
 
       const ts1 = await time.latest();
-      const p1 = await generateRealProof({ timestamp: ts1, seed: await adapter.currentNullifierSeed(), signal: h });
+      const p1 = await generateRealProof({ timestamp: ts1, seed: await adapter.currentNullifierSeed(), signal: h, epoch: await adapter.currentEpoch() });
       const zk1 = encodeRealProofTakerArgs(p1);
       const s1 = await env.swap(human, USDC(5_000), usdcIn(env, zk1));
       await expect(s1.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, BigInt(p1.proof.publicSignals.nullifier), h, anyValue);
 
-      await nextEpoch();
-      const p2 = await generateRealProof({ timestamp: await time.latest(), seed: await adapter.currentNullifierSeed(), signal: h });
+      await nextEpoch(); // 5 s into epoch 2: inside the grace period, the epoch-1 proof still lands
+      const botG = await env.quote(bot, USDC(5_000), usdcIn(env));
+      expect((await env.quote(human, USDC(5_000), usdcIn(env, zk1))).amountOut).to.be.gt(botG.amountOut);
+      await time.increase(env.cfg.epochGrace);
+      const p2 = await generateRealProof({ timestamp: await time.latest(), seed: await adapter.currentNullifierSeed(), signal: h, epoch: await adapter.currentEpoch() });
       expect(p2.proof.publicSignals.nullifier).to.not.equal(p1.proof.publicSignals.nullifier); // same person, unlinkable
       expect(p2.qr.signedDataSha256).to.not.equal(undefined);
 
-      // the epoch-1 proof is now rejected; the epoch-2 proof is accepted
+      // past the grace period the epoch-1 proof is rejected; the epoch-2 proof is accepted
       const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
       expect((await env.quote(human, USDC(5_000), usdcIn(env, zk1))).amountOut).to.equal(botQ.amountOut);
       expect((await env.quote(human, USDC(5_000), usdcIn(env, encodeRealProofTakerArgs(p2)))).amountOut).to.be.gt(botQ.amountOut);
     });
 
-    it("a real proof routed through the trusted forwarder (recipient envelope) gets the human tier", async function () {
+    it("a real proof routed through an authorised forwarder (EIP-712 TakerAuthorization in the envelope) gets the human tier", async function () {
       const env = await loadFixture(realEpochFixture);
       const { human, bot } = env.accounts;
       const h = await human.getAddress();
-      const p = await generateRealProof({ timestamp: await time.latest(), seed: await env.contracts.adapter.currentNullifierSeed(), signal: h });
-      const data = forwardedData(env, h, encodeRealProofTakerArgs(p, false, h));
+      const p = await generateRealProof({ timestamp: await time.latest(), seed: await env.contracts.adapter.currentNullifierSeed(), signal: h, epoch: await env.contracts.adapter.currentEpoch() });
+      const data = forwardedData(env, h, encodeRealProofTakerArgs(p, { auth: await env.authorizeTaker(h, env.addr.forwarder) }));
       const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
       const s = await forwardSwap(env, human, USDC(5_000), data);
       expect(s.amountOut).to.be.gt(botQ.amountOut);

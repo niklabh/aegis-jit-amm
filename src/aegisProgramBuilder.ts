@@ -4,7 +4,7 @@
 // AegisJIT TypeScript SDK: compiles AegisJIT strategy programs / orders and taker ZK payloads.
 // Byte-identical to contracts/AegisJITStrategy.sol (asserted in test/AegisJIT.test.ts).
 
-import { AbiCoder, BytesLike, ZeroAddress, concat, getBytes, hexlify, keccak256, solidityPacked, toBeHex, toUtf8Bytes, zeroPadValue } from "ethers";
+import { AbiCoder, BytesLike, Signature, ZeroAddress, concat, getBytes, hexlify, keccak256, solidityPacked, toBeHex, toUtf8Bytes, zeroPadValue } from "ethers";
 import { MakerTraitsLib } from "../test/utils/SwapVMHelpers";
 
 /** Opcode indices understood by AegisSwapVMRouter (AquaOpcodes + AegisJIT extensions). */
@@ -179,13 +179,63 @@ export function encodeWorldIdTakerArgs(nullifierHash: bigint, proof: BytesLike):
   return encodeZKPayload(ZKVerifierType.WORLD_ID, nullifierHash, undefined, proof);
 }
 
-/** WorldIDAdapter proof envelope: (merkleRoot, proof[8]) direct, or (merkleRoot, recipient, proof[8]) via a trusted forwarder */
-export function encodeWorldIdProofEnvelope(merkleRoot: bigint, proof: bigint[], recipient?: string): string {
+// ---------- Taker authorisation (EIP-712, see contracts/zk/TakerAuthorization.sol) ----------
+
+/** A beneficiary's signed permission for one taker (aggregator / relayer / smart account) to present its proof */
+export interface TakerAuth {
+  recipient: string;
+  deadline: bigint;
+  r: string;
+  s: string;
+  v: number;
+}
+
+export const TAKER_AUTHORIZATION_TYPES = { TakerAuthorization: [{ name: "taker", type: "address" }, { name: "deadline", type: "uint256" }] } as const;
+
+export function takerAuthorizationDomain(chainId: bigint | number, adapter: string) {
+  return { name: "AegisJIT ZK Adapter", version: "1", chainId, verifyingContract: adapter };
+}
+
+/** Signs `TakerAuthorization(taker, deadline)` in the adapter's domain (ethers v6 `signTypedData`) */
+export async function signTakerAuthorization(
+  signer: { getAddress(): Promise<string>; signTypedData(domain: any, types: any, value: any): Promise<string> },
+  chainId: bigint | number,
+  adapter: string,
+  taker: string,
+  deadline: bigint,
+): Promise<TakerAuth> {
+  const sig = Signature.from(await signer.signTypedData(takerAuthorizationDomain(chainId, adapter), TAKER_AUTHORIZATION_TYPES, { taker, deadline }));
+  return { recipient: await signer.getAddress(), deadline, r: sig.r, s: sig.s, v: sig.v };
+}
+
+// ---------- Proof envelopes ----------
+
+/**
+ * AnonAadhaarAdapter envelope: (timestamp, epoch, pubkeyHash, proof[8]) direct (352 B), or with the
+ * beneficiary's taker authorisation (timestamp, epoch, pubkeyHash, recipient, deadline, r, s, v, proof[8]) (512 B).
+ * `pubkeyHash` = the circuit's hash of the RSA key that signed the QR (0 = the verifier's primary key).
+ */
+export function encodeAadhaarEnvelope(timestamp: bigint, epoch: bigint, pubkeyHash: bigint, proof: bigint[], auth?: TakerAuth): string {
+  if (proof.length !== 8) throw new Error("Groth16 proof must be 8 words");
+  const c = AbiCoder.defaultAbiCoder();
+  return auth
+    ? c.encode(["uint256", "uint256", "uint256", "address", "uint256", "bytes32", "bytes32", "uint8", "uint256[8]"],
+        [timestamp, epoch, pubkeyHash, auth.recipient, auth.deadline, auth.r, auth.s, auth.v, proof])
+    : c.encode(["uint256", "uint256", "uint256", "uint256[8]"], [timestamp, epoch, pubkeyHash, proof]);
+}
+
+/**
+ * WorldIDAdapter envelope: (merkleRoot, epoch, proof[8]) direct (320 B), or with the beneficiary's taker
+ * authorisation (merkleRoot, epoch, recipient, deadline, r, s, v, proof[8]) (480 B). `epoch` is 0 unless
+ * the adapter rotates its action per epoch.
+ */
+export function encodeWorldIdProofEnvelope(merkleRoot: bigint, epoch: bigint, proof: bigint[], auth?: TakerAuth): string {
   if (proof.length !== 8) throw new Error("World ID proof must be 8 words");
   const c = AbiCoder.defaultAbiCoder();
-  return recipient
-    ? c.encode(["uint256", "address", "uint256[8]"], [merkleRoot, recipient, proof])
-    : c.encode(["uint256", "uint256[8]"], [merkleRoot, proof]);
+  return auth
+    ? c.encode(["uint256", "uint256", "address", "uint256", "bytes32", "bytes32", "uint8", "uint256[8]"],
+        [merkleRoot, epoch, auth.recipient, auth.deadline, auth.r, auth.s, auth.v, proof])
+    : c.encode(["uint256", "uint256", "uint256[8]"], [merkleRoot, epoch, proof]);
 }
 
 /** World ID `ByteHasher.hashToField`: keccak256 >> 8 */
@@ -198,9 +248,14 @@ export function worldIdSignalHash(address: string): bigint {
   return hashToField(b);
 }
 
+/** IDKit `action` for an epoch when the adapter rotates actions: `<action>-<epoch>`; the plain action otherwise */
+export function worldIdActionFor(action: string, epoch?: bigint): string {
+  return epoch === undefined ? action : `${action}-${epoch.toString()}`;
+}
+
 /** externalNullifierHash = hashToField(abi.encodePacked(hashToField(appId), action)) — World ID on-chain template */
-export function worldIdExternalNullifier(appId: string, action: string): bigint {
-  return hashToField(concat([zeroPadValue(toBeHex(hashToField(toUtf8Bytes(appId))), 32), toUtf8Bytes(action)]));
+export function worldIdExternalNullifier(appId: string, action: string, epoch?: bigint): bigint {
+  return hashToField(concat([zeroPadValue(toBeHex(hashToField(toUtf8Bytes(appId))), 32), toUtf8Bytes(worldIdActionFor(action, epoch))]));
 }
 
 /** Message the MockAnonIdentityVerifier issuer signs (EIP-191 `signMessage(getBytes(hash))`). */

@@ -213,7 +213,7 @@ async function main() {
     if (REAL_ZK) {
       process.stdout.write(`${C.dim}  scanning signed test Aadhaar QR → RSA-2048 → Groth16 proving…${C.reset}`);
       const ts = (await ethers.provider.getBlock("latest"))!.timestamp;
-      real = await generateRealProof({ timestamp: ts, seed: await env.contracts.adapter.currentNullifierSeed(), signal: hAddr });
+      real = await generateRealProof({ timestamp: ts, seed: await env.contracts.adapter.currentNullifierSeed(), signal: hAddr, epoch: await env.contracts.adapter.currentEpoch() });
       zk = encodeRealProofTakerArgs(real);
       process.stdout.write(` done (${real.proof.provingMs} ms)\n`);
     } else {
@@ -294,7 +294,7 @@ async function main() {
     const amount = USDC(5_000);
     const wAddr = await worldHuman.getAddress();
     const { worldIdAdapter, worldIdRouter } = env.contracts;
-    const ext: bigint = await worldIdAdapter.EXTERNAL_NULLIFIER();
+    const ext: bigint = await worldIdAdapter.currentExternalNullifier();
     const hex = (d: string) => "0x" + BigInt(d).toString(16);
     let real: WorldIdProof | null = null;
     let zk: string;

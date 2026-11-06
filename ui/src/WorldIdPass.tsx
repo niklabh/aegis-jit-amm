@@ -9,7 +9,7 @@ import { toHex } from "viem";
 
 import type { AegisClient, Deployment } from "./lib/aegis";
 import {
-  buildGroup, encodeWorldIdPayload, externalNullifierOf, fromIdKitResult, identityFor, proofWordsHex, proveWorldId, signalHashOf,
+  buildGroup, encodeWorldIdPayload, externalNullifierOf, fromIdKitResult, identityFor, proofWordsHex, proveWorldId, signalHashOf, worldIdActionFor,
   type WorldIdProofResult,
 } from "./lib/worldid";
 import { Badge, Step, short } from "./PassUi";
@@ -38,12 +38,15 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
   const id = useMemo(() => identityFor(w.identityPrefix, identity), [w.identityPrefix, identity]);
   const memberIndex = group.indexOf(id.commitment);
   const localRoot = BigInt(group.root);
-  const externalNullifier = useMemo(() => externalNullifierOf(w.appId, w.action), [w.appId, w.action]);
+  const [epoch, setEpoch] = useState<bigint>(0n);
+  // the action rotates per epoch when the adapter is deployed with an epoch duration (CROPS unlinkability for World ID too)
+  const externalNullifier = useMemo(() => externalNullifierOf(w.appId, worldIdActionFor(w.action, w.epochDuration ?? 0, epoch)), [w.appId, w.action, w.epochDuration, epoch]);
   const artifactUrl = (f: string) => `${w.artifactsBase}/${f}`;
 
   useEffect(() => {
     fetch(artifactUrl("semaphore.zkey"), { method: "HEAD" }).then((r) => setArtifacts(r.ok)).catch(() => setArtifacts(false));
     client.worldIdLatestRoot().then(setLatestRoot).catch(() => setLatestRoot(null));
+    client.worldIdCurrentEpoch().then(setEpoch).catch(() => setEpoch(0n));
   }, [client, w.artifactsBase]);
   useEffect(() => {
     if (!busy) return;
@@ -79,7 +82,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
   }
 
   const attach = () => proof && onChain && onAttach({
-    kind: "worldid", label: "World ID · Semaphore", data: client.worldIdTakerData(encodeWorldIdPayload(proof.root, proof.nullifierHash, proof.proof)),
+    kind: "worldid", label: "World ID · Semaphore", data: client.worldIdTakerData(encodeWorldIdPayload(proof.root, epoch, proof.nullifierHash, proof.proof)),
     verified: onChain.ok, beneficiary: onChain.beneficiary, worldId: proof,
   });
   const isAttached = attached?.kind === "worldid" && attached.worldId === proof;

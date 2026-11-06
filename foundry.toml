@@ -9,6 +9,7 @@ solc_version = "0.8.30"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
+via_ir = true  # the adapters decode 9-field envelopes; legacy codegen hits "stack too deep"
 fs_permissions = [{ access = "read", path = "./test/fixtures" }]
 remappings = [
   "@1inch/=node_modules/@1inch/",

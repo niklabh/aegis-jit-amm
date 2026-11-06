@@ -14,6 +14,7 @@ import {
   AegisEnv, deployAegis, encodeRealProofTakerArgs, generateRealProof, MAHARASHTRA_PACKED, RealProof,
   TEST_SIGNER_PUBKEY_HASH, UIDAI_2021_PUBKEY_HASH, USDC, AEGIS_NULLIFIER_SEED,
 } from "./utils/aegisFixture";
+import { encodeAadhaarEnvelope } from "../src/aegisProgramBuilder";
 
 const { ethers } = require("hardhat");
 
@@ -23,7 +24,7 @@ async function realFixture() {
   const env = await deployAegis({ zkBackend: "groth16", adapterRequiredState: MAHARASHTRA_PACKED, salt: 20n });
   const human = await env.accounts.human.getAddress();
   const ts = (await ethers.provider.getBlock("latest"))!.timestamp;
-  const real = await generateRealProof({ timestamp: ts, seed: AEGIS_NULLIFIER_SEED, signal: human }); // ~15 s
+  const real = await generateRealProof({ timestamp: ts, seed: AEGIS_NULLIFIER_SEED, signal: human, epoch: 0n }); // ~15 s
   return { env, real, zk: encodeRealProofTakerArgs(real) };
 }
 
@@ -38,7 +39,7 @@ const proofArgs = (r: RealProof) => {
   return {
     nullifier: BigInt(ps.nullifier),
     reveal: [BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state)] as [bigint, bigint, bigint, bigint],
-    proof: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256[8]"], [BigInt(ps.timestamp), r.proof.groth16Proof.map(BigInt)]),
+    proof: encodeAadhaarEnvelope(BigInt(ps.timestamp), 0n, BigInt(ps.pubkeyHash), r.proof.groth16Proof.map(BigInt)),
     timestamp: BigInt(ps.timestamp),
     words: r.proof.groth16Proof.map(BigInt) as unknown as bigint[],
   };
@@ -90,11 +91,21 @@ describe("Real Groth16 (BN254) Anon Aadhaar proof -> AegisJIT swap", function ()
     console.log(`      Groth16 verifyAnonAadhaarProof gas (incl. 21k base): ${gas}`);
   });
 
-  it("trust root: a verifier pinned to the UIDAI key hash rejects proofs from the test signer", async function () {
+  it("trust root: a verifier pinned to the UIDAI key hash rejects proofs from the test signer; a key SET accepts any trusted key", async function () {
     const { env, real } = await loadFixture(realFixture);
-    const prod = await (await ethers.getContractFactory("AnonAadhaarGroth16Verifier")).deploy(env.addr.pairingVerifier, UIDAI_2021_PUBKEY_HASH);
     const a = proofArgs(real);
-    expect(await prod.verifyAnonAadhaarProof(AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, BigInt(await env.accounts.human.getAddress()), a.reveal, a.words)).to.equal(false);
+    const human = BigInt(await env.accounts.human.getAddress());
+    const prod = await (await ethers.getContractFactory("AnonAadhaarGroth16Verifier")).deploy(env.addr.pairingVerifier, [UIDAI_2021_PUBKEY_HASH]);
+    expect(await prod.verifyAnonAadhaarProof(AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, human, a.reveal, a.words)).to.equal(false);
+    expect(await prod.verifyAnonAadhaarProofWithKey(TEST_SIGNER_PUBKEY_HASH, AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, human, a.reveal, a.words)).to.equal(false); // not in the set
+
+    // UIDAI rotates certificates and several stay valid at once: trust a set, primary first
+    const multi = await (await ethers.getContractFactory("AnonAadhaarGroth16Verifier")).deploy(env.addr.pairingVerifier, [UIDAI_2021_PUBKEY_HASH, TEST_SIGNER_PUBKEY_HASH]);
+    expect(await multi.PUBKEY_HASH()).to.equal(UIDAI_2021_PUBKEY_HASH);
+    expect(await multi.isTrustedPubkeyHash(TEST_SIGNER_PUBKEY_HASH)).to.equal(true);
+    expect(await multi.verifyAnonAadhaarProof(AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, human, a.reveal, a.words)).to.equal(false); // primary key path
+    expect(await multi.verifyAnonAadhaarProofWithKey(TEST_SIGNER_PUBKEY_HASH, AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, human, a.reveal, a.words)).to.equal(true);
+    expect(await multi.verifyAnonAadhaarProofWithKey(UIDAI_2021_PUBKEY_HASH, AEGIS_NULLIFIER_SEED, a.nullifier, a.timestamp, human, a.reveal, a.words)).to.equal(false); // wrong key for this QR
   });
 
   it("swap(): real proof in takerData executes ecPairing (0x08), passes 0x2A and gets the human fee tier in 0x7A; quote == swap", async function () {
@@ -131,7 +142,7 @@ describe("Real Groth16 (BN254) Anon Aadhaar proof -> AegisJIT swap", function ()
   it("a tampered Groth16 proof never grants the discount (and never reverts the swap in tiered mode)", async function () {
     const { env, real } = await loadFixture(realFixture);
     const { human, bot } = env.accounts;
-    const bad = env.takerData({ tokenIn: env.addr.usdc, zk: encodeRealProofTakerArgs(real, true) });
+    const bad = env.takerData({ tokenIn: env.addr.usdc, zk: encodeRealProofTakerArgs(real, { tamper: true }) });
     const q = await env.quote(human, USDC(5_000), bad);
     const botQ = await env.quote(bot, USDC(5_000), env.takerData({ tokenIn: env.addr.usdc }));
     expect(q.amountOut).to.equal(botQ.amountOut);

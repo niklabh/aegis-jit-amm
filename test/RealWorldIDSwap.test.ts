@@ -21,7 +21,7 @@ const { ethers } = require("hardhat");
 async function realFixture() {
   const env = await deployAegis({ worldIdBackend: "semaphore", salt: 50n });
   const h = await env.accounts.human.getAddress();
-  const ext: bigint = await env.contracts.worldIdAdapter.EXTERNAL_NULLIFIER();
+  const ext: bigint = await env.contracts.worldIdAdapter.currentExternalNullifier();
   const proof = await generateWorldIdProof({ identity: "human", signal: h, externalNullifier: ext }); // ~0.5 s
   await (await env.contracts.worldIdRouter.connect(env.accounts.deployer).registerRoot(BigInt(proof.root))).wait();
   return { env, proof, zk: encodeWorldIdProofTakerArgs(proof), ext };
@@ -78,7 +78,7 @@ describe("Real Semaphore (BN254) World ID proof -> AegisJIT swap", function () {
     const { worldIdAdapter, worldIdRouter } = env.contracts;
     const h = await env.accounts.human.getAddress();
     const b = await env.accounts.bot.getAddress();
-    const envelope = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256[8]"], [BigInt(proof.root), proof.proof.map(BigInt)]);
+    const envelope = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256[8]"], [BigInt(proof.root), 0n, proof.proof.map(BigInt)]);
     const ok = await worldIdAdapter.verifyProof(h, BigInt(proof.nullifierHash), ZERO4, envelope);
     expect(ok[0]).to.equal(true);
     expect(ok[1]).to.equal(h);

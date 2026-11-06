@@ -63,7 +63,7 @@ assert(wchk.ok && wchk.beneficiary.toLowerCase() === dep.accounts.human.toLowerC
 assert(!(await c.verifyWorldIdOnChain(dep.accounts.bot, wp)).ok, "…and rejects it for the bot (signalHash binding)");
 assert(!(await c.verifyWorldIdOnChain(dep.accounts.human, { ...wp, proof: wp.proof.map((x, i) => (i === 7 ? x ^ 1n : x)) })).ok, "…and rejects a tampered proof word");
 assert((await c.worldIdRootStatus(wp.root)) === "latest" && (await c.worldIdRootStatus(wp.root + 1n)) === "unknown-or-expired", "root status mirrors the router's requireValidRoot");
-const wData = c.worldIdTakerData(encodeWorldIdPayload(wp.root, wp.nullifierHash, wp.proof));
+const wData = c.worldIdTakerData(encodeWorldIdPayload(wp.root, await c.worldIdCurrentEpoch(), wp.nullifierHash, wp.proof));
 assert(wData.toLowerCase() === dep.takerData.worldIdHuman!.slice(0, 46).toLowerCase() + wData.slice(46).toLowerCase() && wData.length === dep.takerData.worldIdHuman!.length, "takerTraits header rebuilt client-side == seeded header (type-1 payload length)");
 const wq = await c.quote("human", amt, wData), bq3 = await c.quote("bot", amt);
 assert(wq.ok && bq3.ok && wq.amountOut > bq3.amountOut, "human tier with the World ID proof > bot tier");
@@ -89,7 +89,7 @@ const chainCheck = await c.verifyOnChain(dep.accounts.human, real);
 assert(chainCheck.ok && chainCheck.beneficiary.toLowerCase() === dep.accounts.human.toLowerCase(), "adapter.verifyProof (BN254 ecPairing) accepts it for the human");
 assert(!(await c.verifyOnChain(dep.accounts.bot, real)).ok, "…and rejects it for the bot (signal binding)");
 
-const realData = c.realProofTakerData(real);
+const realData = c.realProofTakerData(real, await c.currentEpoch());
 const hq = await c.quote("human", amt, realData), bq = await c.quote("bot", amt);
 assert(hq.ok && bq.ok && hq.amountOut > bq.amountOut, "human tier with the fresh real proof > bot tier");
 const wq2 = await c.quote("human", amt, wData);

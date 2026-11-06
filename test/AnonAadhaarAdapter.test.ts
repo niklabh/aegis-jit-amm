@@ -5,6 +5,7 @@ import { expect } from "chai";
 import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 
 import { AEGIS_NULLIFIER_SEED, AegisEnv, deployAegis, MUMBAI_HUMAN_REVEAL, RevealArray, USDC } from "./utils/aegisFixture";
+import { encodeAadhaarEnvelope } from "../src/aegisProgramBuilder";
 
 const { ethers } = require("hardhat");
 
@@ -83,8 +84,8 @@ describe("AnonAadhaarAdapter (IZKVerifier over Anon Aadhaar Groth16)", function 
     expect((await env.quote(human, USDC(5_000), usdcIn(env, stale))).amountOut).to.equal(botQ.amountOut);
     expect((await env.quote(human, USDC(5_000), usdcIn(env, fresh))).amountOut).to.be.gt(botQ.amountOut);
 
-    // the same fresh proof ages out
-    await time.increase(env.cfg.maxProofAge);
+    // the same fresh proof ages out (stay inside the order's 30-day deadline: the proof is already 1 h old)
+    await time.increase(env.cfg.maxProofAge - 3_600 + 10);
     expect((await env.quote(human, USDC(5_000), usdcIn(env, fresh))).amountOut).to.equal(
       (await env.quote(bot, USDC(5_000), usdcIn(env))).amountOut,
     );
@@ -107,10 +108,24 @@ describe("AnonAadhaarAdapter (IZKVerifier over Anon Aadhaar Groth16)", function 
     const ts = BigInt(await time.latest());
     const words = Array.from({ length: 8 }, (_, i) => BigInt(i + 1));
     await anonAadhaar.registerProof(AEGIS_NULLIFIER_SEED + 1n, 3n, ts, BigInt(hAddr), MUMBAI_HUMAN_REVEAL, words);
-    const otherApp = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256[8]"], [ts, words]);
+    const otherApp = encodeAadhaarEnvelope(ts, 0n, 0n, words);
     expect((await adapter.verifyProof(hAddr, 3n, MUMBAI_HUMAN_REVEAL, otherApp))[0]).to.equal(false);
 
     expect((await adapter.verifyProof(hAddr, 1n, MUMBAI_HUMAN_REVEAL, "0x1234"))[0]).to.equal(false);
+  });
+
+  it("UIDAI key set: a proof made under a trusted non-primary key verifies; the same proof claimed under another key does not", async function () {
+    const env = await loadFixture(aadhaarFixture);
+    const { adapter } = env.contracts;
+    const hAddr = await env.accounts.human.getAddress();
+    const otherKey = 0xabcdefn; // a second UIDAI certificate's circuit pubkeyHash (registered as trusted by the mock prover)
+    const zk = await env.zkArgs(hAddr, MUMBAI_HUMAN_REVEAL, 11n, { pubkeyHash: otherKey });
+    const { nullifier, reveal, proof } = decodeZk(zk);
+    expect((await adapter.verifyProof(hAddr, nullifier, reveal, proof))[0]).to.equal(true);
+    const [ts, epoch, , words] = ethers.AbiCoder.defaultAbiCoder().decode(["uint256", "uint256", "uint256", "uint256[8]"], proof);
+    const wrongKey = encodeAadhaarEnvelope(ts, epoch, otherKey + 1n, [...words]);
+    expect((await adapter.verifyProof(hAddr, nullifier, reveal, wrongKey))[0]).to.equal(false);
+    expect((await adapter.verifyProof(hAddr, nullifier, reveal, encodeAadhaarEnvelope(ts, epoch + 1n, otherKey, [...words])))[0]).to.equal(false); // wrong epoch
   });
 
   it("adapter-level jurisdiction policy (requiredState on revealArray[3])", async function () {

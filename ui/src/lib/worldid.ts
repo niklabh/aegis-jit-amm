@@ -91,17 +91,20 @@ export async function proveWorldId(o: ProveOptions): Promise<WorldIdProofResult>
   };
 }
 
-/** WorldIDAdapter envelope (direct): abi.encode(merkleRoot, uint256[8]) */
-export function worldIdEnvelope(root: bigint, proof: bigint[]): Hex {
+/** WorldIDAdapter envelope (direct): abi.encode(merkleRoot, epoch, uint256[8]); epoch = 0 unless the adapter rotates actions */
+export function worldIdEnvelope(root: bigint, epoch: bigint, proof: bigint[]): Hex {
   if (proof.length !== 8) throw new Error("World ID proof must be 8 words");
-  return encodeAbiParameters([{ type: "uint256" }, { type: "uint256[8]" }], [root, proof as unknown as readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint]]);
+  return encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }, { type: "uint256[8]" }], [root, epoch, proof as unknown as readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint]]);
 }
 
-/** 0x2A type-1 taker payload: [uint16 L][0x01][nullifierHash][abi.encode(merkleRoot, uint256[8])] */
-export function encodeWorldIdPayload(root: bigint, nullifierHash: bigint, proof: bigint[]): Hex {
-  const body = encodePacked(["uint8", "uint256", "bytes"], [ZK_TYPE_WORLD_ID, nullifierHash, worldIdEnvelope(root, proof)]);
+/** 0x2A type-1 taker payload: [uint16 L][0x01][nullifierHash][abi.encode(merkleRoot, epoch, uint256[8])] */
+export function encodeWorldIdPayload(root: bigint, epoch: bigint, nullifierHash: bigint, proof: bigint[]): Hex {
+  const body = encodePacked(["uint8", "uint256", "bytes"], [ZK_TYPE_WORLD_ID, nullifierHash, worldIdEnvelope(root, epoch, proof)]);
   return encodePacked(["uint16", "bytes"], [size(body), body]);
 }
+
+/** IDKit `action` for an epoch when the adapter rotates actions (`<action>-<epoch>`), else the plain action */
+export const worldIdActionFor = (action: string, epochDuration: number, epoch: bigint): string => (epochDuration ? `${action}-${epoch.toString()}` : action);
 
 /** Proof as 256 bytes (8 x 32-byte BN254 coordinates), for display */
 export const proofWordsHex = (proof: bigint[]): Hex => encodePacked(Array(8).fill("uint256"), proof as unknown as bigint[]);

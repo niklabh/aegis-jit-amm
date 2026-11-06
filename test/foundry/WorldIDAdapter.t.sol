@@ -18,7 +18,6 @@ contract WorldIDAdapterTest is Test {
     uint256 internal constant GROUP = 1;
     uint256 internal constant INITIAL_ROOT = 0xa11ce;
     uint256 internal constant EXPIRY = 1 hours;
-    address internal constant FORWARDER = address(0xF0F0);
 
     MockSemaphoreVerifier internal semaphore;
     MockWorldIDRouter internal router;
@@ -28,9 +27,7 @@ contract WorldIDAdapterTest is Test {
         vm.warp(1_800_000_000);
         semaphore = new MockSemaphoreVerifier(address(this));
         router = new MockWorldIDRouter(IWorldIDSemaphoreVerifier(address(semaphore)), address(this), GROUP, INITIAL_ROOT, EXPIRY);
-        address[] memory fwd = new address[](1);
-        fwd[0] = FORWARDER;
-        adapter = new WorldIDAdapter(IWorldID(address(router)), GROUP, APP_ID, ACTION, fwd);
+        adapter = new WorldIDAdapter(IWorldID(address(router)), GROUP, APP_ID, ACTION, 0, 0);
     }
 
     function _hashToField(bytes memory b) internal pure returns (uint256) {
@@ -53,7 +50,7 @@ contract WorldIDAdapterTest is Test {
     function testFuzz_signalBinding(address taker, address other, uint256 nullifierHash) public {
         vm.assume(taker != other);
         uint256[8] memory words = _prove(taker, nullifierHash, INITIAL_ROOT, adapter.EXTERNAL_NULLIFIER());
-        bytes memory proof = abi.encode(INITIAL_ROOT, words);
+        bytes memory proof = abi.encode(INITIAL_ROOT, uint256(0), words);
         (bool ok, address who,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertTrue(ok);
         assertEq(who, taker);
@@ -65,7 +62,7 @@ contract WorldIDAdapterTest is Test {
     function testFuzz_externalNullifier(address taker, uint256 nullifierHash, uint256 otherExternalNullifier) public {
         vm.assume(otherExternalNullifier != adapter.EXTERNAL_NULLIFIER());
         uint256[8] memory words = _prove(taker, nullifierHash, INITIAL_ROOT, otherExternalNullifier);
-        (bool ok,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, words));
+        (bool ok,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, uint256(0), words));
         assertFalse(ok);
     }
 
@@ -81,11 +78,11 @@ contract WorldIDAdapterTest is Test {
         router.registerRoot(newRoot);
         vm.warp(block.timestamp + elapsed);
 
-        (bool okOld,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, oldWords));
+        (bool okOld,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, uint256(0), oldWords));
         assertEq(okOld, elapsed <= EXPIRY, "superseded root valid iff within expiry");
-        (bool okNew,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(newRoot, newWords));
+        (bool okNew,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(newRoot, uint256(0), newWords));
         assertTrue(okNew, "latest root always valid");
-        (bool okUnknown,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(unknownRoot, unknownWords));
+        (bool okUnknown,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(unknownRoot, uint256(0), unknownWords));
         assertFalse(okUnknown, "unknown root never valid");
     }
 
@@ -100,18 +97,30 @@ contract WorldIDAdapterTest is Test {
         router.verifyProof(INITIAL_ROOT, groupId, 0, 0, 0, words);
     }
 
-    /// Recipient envelopes bind the signal to `recipient` and are honoured only from trusted forwarders
-    function testFuzz_forwardedEnvelope(address taker, address recipient, uint256 nullifierHash) public {
-        vm.assume(taker != recipient && taker != FORWARDER);
-        uint256[8] memory words = _prove(recipient, nullifierHash, INITIAL_ROOT, adapter.EXTERNAL_NULLIFIER());
-        bytes memory envelope = abi.encode(INITIAL_ROOT, recipient, words);
-        (bool okFwd, address who,) = adapter.verifyProof(FORWARDER, nullifierHash, [uint256(0), 0, 0, 0], envelope);
-        assertTrue(okFwd);
-        assertEq(who, recipient);
-        (bool okDirect,,) = adapter.verifyProof(recipient, nullifierHash, [uint256(0), 0, 0, 0], envelope);
-        assertTrue(okDirect, "the recipient may present its own envelope");
-        (bool okRogue,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], envelope);
-        assertFalse(okRogue, "untrusted relayer cannot claim another beneficiary");
+    /// Authorised envelopes: the beneficiary signs TakerAuthorization(taker, deadline); only that taker
+    /// (or the beneficiary itself) can present the proof, and only until the deadline.
+    function testFuzz_takerAuthorization(uint256 pk, address taker, address other, uint256 nullifierHash, uint256 deadline) public {
+        pk = bound(pk, 1, SECP256K1_ORDER - 1);
+        address beneficiary = vm.addr(pk);
+        vm.assume(taker != beneficiary && other != taker && other != beneficiary);
+        deadline = bound(deadline, block.timestamp, type(uint64).max);
+        uint256[8] memory words = _prove(beneficiary, nullifierHash, INITIAL_ROOT, adapter.EXTERNAL_NULLIFIER());
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, adapter.takerAuthorizationDigest(taker, deadline));
+        bytes memory envelope = abi.encode(INITIAL_ROOT, uint256(0), beneficiary, deadline, r, s, v, words);
+
+        (bool okFwd, address who,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        assertTrue(okFwd, "authorised taker");
+        assertEq(who, beneficiary);
+        (bool okSelf,,) = adapter.verifyProof(beneficiary, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        assertTrue(okSelf, "the beneficiary may present its own envelope");
+        (bool okOther,,) = adapter.verifyProof(other, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        assertFalse(okOther, "any other taker is rejected");
+        bytes memory forged = abi.encode(INITIAL_ROOT, uint256(0), beneficiary, deadline, r, bytes32(uint256(s) ^ 1), v, words);
+        (bool okForged,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], forged);
+        assertFalse(okForged, "tampered signature");
+        vm.warp(deadline + 1);
+        (bool okLate,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        assertFalse(okLate, "expired authorisation");
     }
 
     /// Arbitrary proof bytes never revert, only return false
@@ -146,7 +155,7 @@ contract WorldIDAdapterTest is Test {
         f = _fixture();
         verifier = new SemaphoreVerifier();
         realRouter = new MockWorldIDRouter(IWorldIDSemaphoreVerifier(address(verifier)), address(this), GROUP, f.root, EXPIRY);
-        realAdapter = new WorldIDAdapter(IWorldID(address(realRouter)), GROUP, APP_ID, ACTION, new address[](0));
+        realAdapter = new WorldIDAdapter(IWorldID(address(realRouter)), GROUP, APP_ID, ACTION, 0, 0);
         assertEq(realAdapter.EXTERNAL_NULLIFIER(), f.externalNullifierHash, "fixture action == adapter action");
         assertEq(realAdapter.signalHashOf(f.signal), f.signalHash, "fixture signal hashing == adapter");
     }
@@ -155,7 +164,7 @@ contract WorldIDAdapterTest is Test {
     function test_realProof_verifiesOnWorldIdVerifier() public {
         (WorldIDAdapter realAdapter,, SemaphoreVerifier verifier, Fixture memory f) = _realStack();
         verifier.verifyProof(f.proof, [f.root, f.nullifierHash, f.signalHash, f.externalNullifierHash]);
-        (bool ok, address who,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
+        (bool ok, address who,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, uint256(0), f.proof));
         assertTrue(ok);
         assertEq(who, f.signal);
     }
@@ -168,7 +177,7 @@ contract WorldIDAdapterTest is Test {
         f.proof[index] ^= mask;
         vm.expectRevert();
         verifier.verifyProof(f.proof, [f.root, f.nullifierHash, f.signalHash, f.externalNullifierHash]);
-        (bool ok,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
+        (bool ok,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, uint256(0), f.proof));
         assertFalse(ok);
     }
 
@@ -177,21 +186,21 @@ contract WorldIDAdapterTest is Test {
     function testFuzz_realProof_onlyBoundTaker(address other) public {
         (WorldIDAdapter realAdapter,,, Fixture memory f) = _realStack();
         vm.assume(other != f.signal);
-        (bool ok,,) = realAdapter.verifyProof(other, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
+        (bool ok,,) = realAdapter.verifyProof(other, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, uint256(0), f.proof));
         assertFalse(ok);
     }
 
     /// The real proof only verifies against its own root, and only while that root is live
     function test_realProof_rootLifecycle() public {
         (WorldIDAdapter realAdapter, MockWorldIDRouter realRouter,, Fixture memory f) = _realStack();
-        bytes memory proof = abi.encode(f.root, f.proof);
+        bytes memory proof = abi.encode(f.root, uint256(0), f.proof);
         realRouter.registerRoot(f.root + 1);
         (bool okHistorical,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertTrue(okHistorical, "superseded root still valid within 1 h");
         vm.warp(block.timestamp + EXPIRY + 1);
         (bool okExpired,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertFalse(okExpired, "expired root");
-        (bool okWrongRoot,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root + 1, f.proof));
+        (bool okWrongRoot,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root + 1, uint256(0), f.proof));
         assertFalse(okWrongRoot, "latest root, but the proof was not generated for it");
     }
 }

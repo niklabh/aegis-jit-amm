@@ -30,6 +30,8 @@ export interface Deployment {
     backend: "semaphore" | "mock";
     appId: string;
     action: string;
+    /** action rotation epoch in seconds (0 = one static action) */
+    epochDuration?: number;
     externalNullifier: string;
     groupId: number;
     treeDepth: number;
@@ -60,10 +62,10 @@ export interface ProverResult {
 export const ZK_TYPE_WORLD_ID = 1;
 export const ZK_TYPE_AADHAAR = 2;
 
-/** 0x2A ZK Aadhaar taker payload: [uint16 L][0x02][nullifier][revealArray[4]][abi.encode(timestamp, uint256[8])] */
-export function encodeZkPayload(r: ProverResult): Hex {
+/** 0x2A ZK Aadhaar taker payload: [uint16 L][0x02][nullifier][revealArray[4]][abi.encode(timestamp, epoch, pubkeyHash, uint256[8])] */
+export function encodeZkPayload(r: ProverResult, epoch: bigint): Hex {
   const ps = r.proof.publicSignals;
-  const envelope = proofEnvelope(r);
+  const envelope = proofEnvelope(r, epoch);
   const body = encodePacked(
     ["uint8", "uint256", "uint256", "uint256", "uint256", "uint256", "bytes"],
     [ZK_TYPE_AADHAAR, BigInt(ps.nullifier), BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state), envelope],
@@ -71,9 +73,10 @@ export function encodeZkPayload(r: ProverResult): Hex {
   return encodePacked(["uint16", "bytes"], [size(body), body]);
 }
 
-export function proofEnvelope(r: ProverResult): Hex {
-  return encodeAbiParameters([{ type: "uint256" }, { type: "uint256[8]" }],
-    [BigInt(r.proof.publicSignals.timestamp), r.proof.groth16Proof.map(BigInt) as any]);
+/** AnonAadhaarAdapter envelope (direct): (timestamp, epoch, pubkeyHash, proof[8]); pubkeyHash selects the UIDAI key in the verifier's set */
+export function proofEnvelope(r: ProverResult, epoch: bigint): Hex {
+  return encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256[8]" }],
+    [BigInt(r.proof.publicSignals.timestamp), epoch, BigInt(r.proof.publicSignals.pubkeyHash), r.proof.groth16Proof.map(BigInt) as any]);
 }
 
 /** Groth16 proof as 256 bytes (8 × 32-byte BN254 coordinates) */
@@ -205,17 +208,17 @@ export function createAegisClient(dep: Deployment) {
     return (await pub.readContract({ ...A, functionName: "currentEpoch", args: [] })) as bigint;
   }
   /** Runs the adapter (and the real BN254 pairing) in an eth_call */
-  async function verifyOnChain(taker: Address, r: ProverResult): Promise<{ ok: boolean; beneficiary: Address }> {
+  async function verifyOnChain(taker: Address, r: ProverResult): Promise<{ ok: boolean; beneficiary: Address; validUntil: bigint }> {
     const ps = r.proof.publicSignals;
-    const [ok, beneficiary] = (await pub.readContract({
+    const [ok, beneficiary, validUntil] = (await pub.readContract({
       ...A, functionName: "verifyProof",
-      args: [taker, BigInt(ps.nullifier), [BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state)], proofEnvelope(r)],
-    })) as [boolean, Address];
-    return { ok, beneficiary };
+      args: [taker, BigInt(ps.nullifier), [BigInt(ps.ageAbove18), BigInt(ps.gender), BigInt(ps.pincode), BigInt(ps.state)], proofEnvelope(r, await currentEpoch())],
+    })) as [boolean, Address, bigint];
+    return { ok, beneficiary, validUntil };
   }
-  /** takerData for the human profile carrying a fresh real Aadhaar proof (type 2) */
-  function realProofTakerData(r: ProverResult): Hex {
-    return buildTakerData(dep, encodeZkPayload(r));
+  /** takerData for the human profile carrying a fresh real Aadhaar proof (type 2) for `epoch` */
+  function realProofTakerData(r: ProverResult, epoch: bigint): Hex {
+    return buildTakerData(dep, encodeZkPayload(r, epoch));
   }
   /** takerData for the human profile carrying a World ID payload (type 1) */
   function worldIdTakerData(payload: Hex): Hex {
@@ -232,11 +235,15 @@ export function createAegisClient(dep: Deployment) {
     return { address: dep.addr.worldIdRouter, abi: dep.abi.worldIdRouter } as const;
   };
   /** WorldIDAdapter.verifyProof → IWorldID.verifyProof → SemaphoreVerifier, in an eth_call */
-  async function verifyWorldIdOnChain(taker: Address, p: { root: bigint; nullifierHash: bigint; proof: bigint[] }): Promise<{ ok: boolean; beneficiary: Address }> {
-    const [ok, beneficiary] = (await pub.readContract({
-      ...W(), functionName: "verifyProof", args: [taker, p.nullifierHash, [0n, 0n, 0n, 0n], worldIdEnvelope(p.root, p.proof)],
-    })) as [boolean, Address];
-    return { ok, beneficiary };
+  async function verifyWorldIdOnChain(taker: Address, p: { root: bigint; nullifierHash: bigint; proof: bigint[] }): Promise<{ ok: boolean; beneficiary: Address; validUntil: bigint }> {
+    const [ok, beneficiary, validUntil] = (await pub.readContract({
+      ...W(), functionName: "verifyProof", args: [taker, p.nullifierHash, [0n, 0n, 0n, 0n], worldIdEnvelope(p.root, await worldIdCurrentEpoch(), p.proof)],
+    })) as [boolean, Address, bigint];
+    return { ok, beneficiary, validUntil };
+  }
+  /** Current action-rotation epoch of the World ID adapter (0 when rotation is off) */
+  async function worldIdCurrentEpoch(): Promise<bigint> {
+    return (await pub.readContract({ ...W(), functionName: "currentEpoch", args: [] })) as bigint;
   }
   async function worldIdLatestRoot(): Promise<bigint> {
     return (await pub.readContract({ ...WR(), functionName: "latestRoot", args: [] })) as bigint;
@@ -247,8 +254,9 @@ export function createAegisClient(dep: Deployment) {
     try { await pub.readContract({ ...WR(), functionName: "requireValidRoot", args: [root] }); return "historical"; }
     catch { return "unknown-or-expired"; }
   }
+  /** externalNullifierHash a proof made right now must commit to (rotates with the epoch if enabled) */
   async function worldIdExternalNullifier(): Promise<bigint> {
-    return (await pub.readContract({ ...W(), functionName: "EXTERNAL_NULLIFIER", args: [] })) as bigint;
+    return (await pub.readContract({ ...W(), functionName: "currentExternalNullifier", args: [] })) as bigint;
   }
   async function prove(digits: string, signal: Address): Promise<ProverResult> {
     const seed = await currentNullifierSeed();
@@ -276,7 +284,7 @@ export function createAegisClient(dep: Deployment) {
   return {
     pub, fetchLiveOrder, quote, swap, splitAttack, readState, snapshot, revert, takerOf,
     currentNullifierSeed, currentEpoch, verifyOnChain, realProofTakerData, prove, testQr, proverHealth,
-    worldIdTakerData, verifyWorldIdOnChain, worldIdLatestRoot, worldIdRootStatus, worldIdExternalNullifier,
+    worldIdTakerData, verifyWorldIdOnChain, worldIdLatestRoot, worldIdRootStatus, worldIdExternalNullifier, worldIdCurrentEpoch,
   };
 }
 

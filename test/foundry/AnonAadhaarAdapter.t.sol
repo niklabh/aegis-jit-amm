@@ -16,7 +16,7 @@ contract AnonAadhaarAdapterTest is Test {
     function setUp() public {
         vm.warp(1_800_000_000);
         aa = new MockGroth16AnonAadhaar(address(this));
-        adapter = new AnonAadhaarAdapter(IAnonAadhaar(address(aa)), SEED, 0, MAX_AGE, 0, new address[](0));
+        adapter = new AnonAadhaarAdapter(IAnonAadhaar(address(aa)), SEED, 0, 0, MAX_AGE, 0);
     }
 
     function _prove(address taker, uint256 nullifier, uint256 ts) internal returns (uint256[4] memory reveal, bytes memory proof) {
@@ -24,7 +24,7 @@ contract AnonAadhaarAdapterTest is Test {
         uint256[8] memory g;
         for (uint256 i; i < 8; i++) g[i] = uint256(keccak256(abi.encode(taker, nullifier, ts, i)));
         aa.registerProof(SEED, nullifier, ts, uint256(uint160(taker)), reveal, g);
-        proof = abi.encode(ts, g);
+        proof = abi.encode(ts, uint256(0), uint256(0), g); // (timestamp, epoch, pubkeyHash = primary key, proof)
     }
 
     /// Any address other than the one the proof commits to is rejected (mempool hijack)

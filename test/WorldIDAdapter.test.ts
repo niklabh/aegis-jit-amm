@@ -20,6 +20,7 @@ const dualFixture = () => deployAegis({ zkBackend: "anonAadhaar", salt: 40n });
 const worldIdOnlyFixture = () => deployAegis({ zkVerifierTypes: ZKVerifierType.WORLD_ID, salt: 41n });
 const aadhaarOnlyFixture = () => deployAegis({ zkBackend: "anonAadhaar", zkVerifierTypes: ZKVerifierType.AADHAAR, salt: 42n });
 const strictWorldIdFixture = () => deployAegis({ zkVerifierTypes: ZKVerifierType.WORLD_ID, zkMode: ZKMode.STRICT, salt: 43n });
+const rotatingFixture = () => deployAegis({ worldIdEpochDuration: 3_600, salt: 44n });
 
 type Reveal4 = [bigint, bigint, bigint, bigint];
 const ZERO_REVEAL: Reveal4 = [0n, 0n, 0n, 0n];
@@ -30,7 +31,7 @@ function decodeWorldId(zk: string): { nullifierHash: bigint; proof: string; root
   const b = ethers.getBytes(zk);
   if (b[2] !== ZKVerifierType.WORLD_ID) throw new Error(`expected a World ID (type 1) payload, got type ${b[2]}`);
   const proof = ethers.hexlify(b.slice(3 + 32));
-  const [root, words] = abi.decode(["uint256", "uint256[8]"], proof) as [bigint, bigint[]];
+  const [root, , words] = abi.decode(["uint256", "uint256", "uint256[8]"], proof) as [bigint, bigint, bigint[]];
   return { nullifierHash: BigInt(ethers.hexlify(b.slice(3, 35))), proof, root, words: [...words] };
 }
 
@@ -251,7 +252,7 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
     const good = decodeWorldId(await env.worldIdArgs(h));
     const otherApp = good.words.map((w) => w ^ 0xffn);
     await semaphoreMock.connect(deployer).registerProof(otherApp, [good.root, good.nullifierHash, worldIdSignalHash(h), ext + 1n]);
-    const otherAppProof = abi.encode(["uint256", "uint256[8]"], [good.root, otherApp]);
+    const otherAppProof = abi.encode(["uint256", "uint256", "uint256[8]"], [good.root, 0n, otherApp]);
     expect((await worldIdAdapter.verifyProof(h, good.nullifierHash, ZERO_REVEAL, otherAppProof))[0]).to.equal(false);
 
     // wrong group at the router
@@ -301,12 +302,12 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
     })).to.be.revertedWithCustomError(onlyWorld.contracts.strategy, "ZKIdentityGuardVerifierMismatch");
   });
 
-  it("trusted forwarder: a World ID proof with a recipient envelope keeps the discount and binds the nullifier to the human", async function () {
+  it("authorised forwarder: a World ID proof with the human's TakerAuthorization keeps the discount and binds the nullifier to the human", async function () {
     const env = await loadFixture(dualFixture);
     const { human, bot } = env.accounts;
     const h = await human.getAddress();
     const { forwarder, usdc, weth, router } = env.contracts;
-    const zk = await env.worldIdArgs(h, { recipient: h });
+    const zk = await env.worldIdArgs(h, { authorizedTaker: env.addr.forwarder });
     const data = forwardedData(env, h, zk);
 
     const viaForwarder = await quoteAs(env, env.addr.forwarder, USDC(5_000), data);
@@ -327,6 +328,35 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
     await expect(forwarder.connect(bot).swapExactIn(env.order, env.addr.usdc, USDC(5_000), data))
       .to.be.revertedWithCustomError(forwarder, "ForwarderRecipientMismatch");
     expect((await env.quote(bot, USDC(5_000), usdcIn(env, zk))).amountOut).to.equal((await env.quote(bot, USDC(5_000), usdcIn(env))).amountOut);
+  });
+
+  it("action rotation: externalNullifier and nullifierHash change every epoch; old proofs die after the grace period; a fresh wallet can bind next epoch", async function () {
+    const env = await loadFixture(rotatingFixture);
+    const { human, bot, whale: altWallet } = env.accounts;
+    const h = await human.getAddress(), alt = await altWallet.getAddress();
+    const { worldIdAdapter, router } = env.contracts;
+    const E = BigInt(env.cfg.worldIdEpochDuration);
+    const e: bigint = await worldIdAdapter.currentEpoch();
+    expect(await worldIdAdapter.actionFor(e)).to.equal(`${env.cfg.worldIdAction}-${e}`); // what IDKit is asked for
+    expect(await worldIdAdapter.currentExternalNullifier()).to.equal(worldIdExternalNullifier(env.cfg.worldIdAppId, env.cfg.worldIdAction, e));
+    expect(await worldIdAdapter.externalNullifierFor(e)).to.not.equal(await worldIdAdapter.EXTERNAL_NULLIFIER());
+
+    const zk1 = await env.worldIdArgs(h, { person: "alice" });
+    const n1 = decodeWorldId(zk1).nullifierHash;
+    const s1 = await env.swap(human, USDC(5_000), usdcIn(env, zk1));
+    await expect(s1.tx).to.emit(router, "NullifierBound").withArgs(env.addr.worldIdAdapter, n1, h, (e + 1n) * E - 1n); // binding ends with the epoch
+    const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
+    expect((await env.quote(altWallet, USDC(5_000), usdcIn(env, await env.worldIdArgs(alt, { person: "alice" })))).amountOut).to.equal(botQ.amountOut); // Sybil-bound this epoch
+
+    const now = BigInt(await time.latest());
+    await time.increaseTo((now / E + 1n) * E + BigInt(env.cfg.worldIdEpochGrace) + 1n); // next epoch, past the grace period
+    const botQ2 = await env.quote(bot, USDC(5_000), usdcIn(env));
+    expect((await env.quote(human, USDC(5_000), usdcIn(env, zk1))).amountOut).to.equal(botQ2.amountOut); // epoch-e proof is dead
+    const zk2 = await env.worldIdArgs(alt, { person: "alice" });
+    const n2 = decodeWorldId(zk2).nullifierHash;
+    expect(n2).to.not.equal(n1); // same human, new action => new nullifierHash: unlinkable across epochs
+    const s2 = await env.swap(altWallet, USDC(5_000), usdcIn(env, zk2));
+    await expect(s2.tx).to.emit(router, "NullifierBound").withArgs(env.addr.worldIdAdapter, n2, alt, anyValue); // free choice of wallet
   });
 
   it("quote() under a real STATICCALL with a World ID payload works and leaves the binding untouched", async function () {

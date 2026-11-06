@@ -182,7 +182,7 @@ export function AadhaarPass({ dep, client, onAttach, attached }: {
 
       {proof && onChain && (
         <Step n={3} title="Pack into SwapVM takerData">
-          <button onClick={() => onAttach({ kind: "aadhaar", label: "ZK Aadhaar · Groth16", data: client.realProofTakerData(proof), result: proof, verified: onChain.ok, beneficiary: onChain.beneficiary })}
+          <button onClick={() => onAttach({ kind: "aadhaar", label: "ZK Aadhaar · Groth16", data: client.realProofTakerData(proof, epoch ?? 0n), result: proof, verified: onChain.ok, beneficiary: onChain.beneficiary })}
             disabled={!onChain.ok}
             className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-sm text-white">
             {attached?.kind === "aadhaar" && attached.result === proof ? "✔ Attached to Verified Human" : "Attach real proof to the swap simulator"}
