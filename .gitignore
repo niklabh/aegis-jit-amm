@@ -4,7 +4,6 @@ node_modules/
 # Hardhat files
 cache/
 artifacts/
-deployments/
 typechain/
 typechain-types/
 
@@ -32,8 +31,9 @@ lerna-debug.log*
 .yarn-integrity
 .yarn
 
-# dotenv environment variable files
-.env
+# dotenv environment variable files (keep only the template)
+.env*
+!.env.example
 
 # Deployments
 deployments/localhost/
@@ -47,7 +47,17 @@ cache-forge/
 
 # Never commit real Aadhaar data or large ZK artifacts
 *.pdf
+!docs/swapvm-dev-preview.pdf
 private/
 .cache/
 .prover.log
 .vite-dev.log
+
+# Keys and certificates — never commit private key material.
+# The only exception is the committed AegisJIT TEST signer (NOT UIDAI), see
+# packages/zk-aadhaar/prover/test-signer/README.md
+*.pem
+*.key
+*.p12
+*.pfx
+!packages/zk-aadhaar/prover/test-signer/aegis-test-signer.*.pem
