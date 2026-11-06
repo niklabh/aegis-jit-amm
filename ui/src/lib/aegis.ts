@@ -273,9 +273,19 @@ export function createAegisClient(dep: Deployment) {
   async function worldIdExternalNullifier(): Promise<bigint> {
     return (await pub.readContract({ ...W(), functionName: "currentExternalNullifier", args: [] })) as bigint;
   }
+  /** Prover base URL. A page served from a public host cannot reach a loopback prover (browsers block public → private
+   *  fetches), so the hosted dashboard talks to its own origin, where ui/worker serves /health and /worldid/rp-context. */
+  const proverBase = (() => {
+    const u = dep.zk.proverUrl;
+    try {
+      if (typeof location === "undefined") return u;
+      const loopback = (h: string) => /^(localhost|127\.0\.0\.1|\[::1\])$/.test(h);
+      return !loopback(location.hostname) && loopback(new URL(u).hostname) ? "" : u;
+    } catch { return u; }
+  })();
   async function prove(digits: string, signal: Address): Promise<ProverResult> {
     const seed = await currentNullifierSeed();
-    const res = await fetch(`${dep.zk.proverUrl}/prove`, {
+    const res = await fetch(`${proverBase}/prove`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ digits, seed: seed.toString(), signal }),
     });
@@ -285,7 +295,7 @@ export function createAegisClient(dep: Deployment) {
   }
   async function testQr(): Promise<{ digits: string; png: string }> {
     const block = await pub.getBlock();
-    const res = await fetch(`${dep.zk.proverUrl}/test-qr`, {
+    const res = await fetch(`${proverBase}/test-qr`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ timestamp: Number(block.timestamp) }),
     });
     const j = await res.json();
@@ -293,11 +303,11 @@ export function createAegisClient(dep: Deployment) {
     return j;
   }
   async function proverHealth(): Promise<{ ok: boolean; artifacts: boolean; worldId?: { configured: boolean; rp_id: string | null; app_id: string | null; apps?: { app_id: string; rp_id: string | null; configured: boolean; source: string }[] } } | null> {
-    try { return await (await fetch(`${dep.zk.proverUrl}/health`)).json(); } catch { return null; }
+    try { return await (await fetch(`${proverBase}/health`)).json(); } catch { return null; }
   }
   /** IDKit `rp_context`: the relying-party request signature, made by the local prover process (the signing key never reaches the browser) */
   async function worldIdRpContext(action: string): Promise<{ rp_id: string; nonce: string; created_at: number; expires_at: number; signature: string; app_id: string | null }> {
-    const res = await fetch(`${dep.zk.proverUrl}/worldid/rp-context`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, app_id: dep.worldId?.appId }) });
+    const res = await fetch(`${proverBase}/worldid/rp-context`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, app_id: dep.worldId?.appId }) });
     const j = await res.json();
     if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
     return j;

@@ -37,7 +37,7 @@ function ageFromDob(dob: string): number | null {
 export function AadhaarPass({ dep, client, onAttach, attached }: {
   dep: Deployment; client: AegisClient; onAttach: (a: AttachedProof | null) => void; attached: AttachedProof | null;
 }) {
-  const [health, setHealth] = useState<{ ok: boolean; artifacts: boolean } | null | undefined>(undefined);
+  const [health, setHealth] = useState<{ ok: boolean; artifacts: boolean; hosted?: boolean } | null | undefined>(undefined);
   const [digits, setDigits] = useState<string | null>(null);
   const [png, setPng] = useState<string | null>(null);
   const [parsed, setParsed] = useState<Parsed | null>(null);
@@ -113,12 +113,12 @@ export function AadhaarPass({ dep, client, onAttach, attached }: {
       <div className="flex items-center justify-between gap-3 mb-3">
         <p className="text-xs text-slate-400">Sovereign Indian ID: Secure QR → RSA-2048 in this browser → Anon Aadhaar v2 Groth16 (local prover) → ecPairing on-chain → <code>0x2A</code> type 2</p>
         <Badge tone={health?.artifacts ? "good" : health ? "warn" : "bad"}>
-          {health === undefined ? "prover…" : health === null ? "local prover offline" : health.artifacts ? "local prover ready" : "prover: artifacts missing"}
+          {health === undefined ? "prover…" : health === null ? "local prover offline" : health.hosted ? "hosted page: Aadhaar proving runs on your machine (./scripts/start-local-demo.sh)" : health.artifacts ? "local prover ready" : "prover: artifacts missing"}
         </Badge>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <button onClick={generateTestQr} disabled={!!busy || !health}
+        <button onClick={generateTestQr} disabled={!!busy || !health || !!health.hosted}
           className="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-sm text-white">
           {busy === "qr" ? "Signing…" : "Generate signed test Aadhaar QR (Mumbai resident, age 24, Maharashtra)"}
         </button>

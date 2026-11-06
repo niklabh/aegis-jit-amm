@@ -203,7 +203,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <h3 className="text-sm font-medium text-slate-200">{realRouter ? "Live World ID: World App / Simulator via IDKit" : "World App / Simulator via IDKit (live World ID)"}</h3>
           <Badge tone={rpStatus === null ? "neutral" : rpStatus.configured ? "good" : "warn"}>
-            {rpStatus === null ? "prover…" : rpStatus.configured ? `RP signer ready · ${rpStatus.rp_id}` : `RP signer not configured for ${w.appId} (PRODUCTION_WORLD_ID_* or WORLD_ID_RP_* in .env)`}
+            {rpStatus === null ? "prover…" : rpStatus.configured ? `RP signer ready · ${rpStatus.rp_id}` : `RP signer not configured for ${w.appId} (local: PRODUCTION_WORLD_ID_* or WORLD_ID_RP_* in .env; hosted: Worker secrets)`}
           </Badge>
         </div>
         <p className="text-[11px] text-slate-500 mt-1.5">
@@ -211,7 +211,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
             ? <>This deployment verifies against World ID's own router at <code>{w.router}</code>; the local tree above cannot prove into it. </>
             : <>On this local chain the adapter points at <code>MockWorldIDRouter</code>, so a real World ID root will not verify here; the flow still shows the proof. </>}
           IDKit asks World App (or the Simulator for a <b>{w.environment ?? "staging"}</b> app) for an Orb proof of app <code>{w.appId}</code>,
-          action <code>{idkitAction}</code>, signal = the Verified Human taker <code>{taker}</code>. The request signature comes from the local prover process.
+          action <code>{idkitAction}</code>, signal = the Verified Human taker <code>{taker}</code>. The request signature comes from the signing endpoint: the local prover process, or this page's own Cloudflare Worker when hosted.
         </p>
         <div className="mt-2 flex items-center gap-2 flex-wrap">
           <button onClick={startIdKit} disabled={!rpStatus?.configured || idkitOpen} data-testid="idkit-start"
