@@ -5,6 +5,7 @@
 import "@nomicfoundation/hardhat-chai-matchers";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
+import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 
 import { AegisEnv, deployAegis, USDC, WORLD_ID_GROUP, WORLD_ID_INITIAL_ROOT } from "./utils/aegisFixture";
 import { TakerTraitsLib } from "./utils/SwapVMHelpers";
@@ -101,7 +102,7 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
 
     const s = await env.swap(human, amount, usdcIn(env, zkWorld));
     expect(s.amountOut).to.equal(worldQ.amountOut); // quote == swap (0 wei)
-    await expect(s.tx).to.emit(router, "NullifierBound").withArgs(env.addr.worldIdAdapter, nullifierHash, h);
+    await expect(s.tx).to.emit(router, "NullifierBound").withArgs(env.addr.worldIdAdapter, nullifierHash, h, anyValue);
     expect(await router.nullifierTaker(env.addr.worldIdAdapter, nullifierHash)).to.equal(h);
   });
 
@@ -196,7 +197,7 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
     // an Aadhaar proof whose nullifier happens to equal the World ID nullifierHash is a different human
     const zkAadhaar = await env.zkArgs(o, undefined, n);
     const s = await env.swap(other, USDC(1_000), usdcIn(env, zkAadhaar));
-    await expect(s.tx).to.emit(router, "NullifierBound").withArgs(env.addr.adapter, n, o);
+    await expect(s.tx).to.emit(router, "NullifierBound").withArgs(env.addr.adapter, n, o, anyValue);
     expect(await router.nullifierTaker(env.addr.worldIdAdapter, n)).to.equal(h);
     expect(await router.nullifierTaker(env.addr.adapter, n)).to.equal(o);
   });
@@ -319,7 +320,7 @@ describe("WorldIDAdapter (IZKVerifier over the World ID Router) — 0x2A proof t
     const ev = rc!.logs.map((l: any) => { try { return router.interface.parseLog(l); } catch { return null; } }).find((e: any) => e?.name === "Swapped");
     expect(ev!.args.amountOut).to.equal(viaForwarder);
     expect(await weth.balanceOf(h) - wethBefore).to.equal(viaForwarder);
-    await expect(tx).to.emit(router, "NullifierBound").withArgs(env.addr.worldIdAdapter, decodeWorldId(zk).nullifierHash, h);
+    await expect(tx).to.emit(router, "NullifierBound").withArgs(env.addr.worldIdAdapter, decodeWorldId(zk).nullifierHash, h, anyValue);
 
     // a searcher replaying the forwarder calldata is rejected by the forwarder; a direct call with the envelope is priced as a bot
     await usdc.connect(bot).approve(env.addr.forwarder, USDC(5_000));

@@ -3,6 +3,7 @@
 import "@nomicfoundation/hardhat-chai-matchers";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
+import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { existsSync } from "fs";
 import * as path from "path";
 
@@ -102,7 +103,7 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const n2 = mockNullifier(await adapter.currentNullifierSeed());
       expect(n2).to.not.equal(n1);
       const s = await env.swap(altWallet, USDC(5_000), usdcIn(env, await env.zkArgs(alt, MUMBAI_HUMAN_REVEAL, n2)));
-      await expect(s.tx).to.emit(router, "NullifierBound").withArgs(env.addr.adapter, n2, alt);
+      await expect(s.tx).to.emit(router, "NullifierBound").withArgs(env.addr.adapter, n2, alt, anyValue);
       expect(await router.nullifierTaker(env.addr.adapter, n1)).to.equal(h); // old binding untouched
     });
   });
@@ -124,7 +125,7 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const s = await forwardSwap(env, human, USDC(5_000), data);
       expect(s.amountOut).to.equal(viaForwarder);
       expect(await env.contracts.weth.balanceOf(h) - wethBefore).to.equal(s.amountOut); // output delivered to the human
-      await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, n, h);
+      await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, n, h, anyValue);
     });
 
     it("a searcher replaying the human's forwarder calldata is rejected by the forwarder (recipient != msg.sender)", async function () {
@@ -197,7 +198,7 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const p1 = await generateRealProof({ timestamp: ts1, seed: await adapter.currentNullifierSeed(), signal: h });
       const zk1 = encodeRealProofTakerArgs(p1);
       const s1 = await env.swap(human, USDC(5_000), usdcIn(env, zk1));
-      await expect(s1.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, BigInt(p1.proof.publicSignals.nullifier), h);
+      await expect(s1.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, BigInt(p1.proof.publicSignals.nullifier), h, anyValue);
 
       await nextEpoch();
       const p2 = await generateRealProof({ timestamp: await time.latest(), seed: await adapter.currentNullifierSeed(), signal: h });
@@ -219,7 +220,7 @@ describe("Epoch-rotating nullifiers & trusted forwarders", function () {
       const botQ = await env.quote(bot, USDC(5_000), usdcIn(env));
       const s = await forwardSwap(env, human, USDC(5_000), data);
       expect(s.amountOut).to.be.gt(botQ.amountOut);
-      await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, BigInt(p.proof.publicSignals.nullifier), h);
+      await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, BigInt(p.proof.publicSignals.nullifier), h, anyValue);
     });
   });
 });

@@ -8,6 +8,7 @@
 import "@nomicfoundation/hardhat-chai-matchers";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
+import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 
 import {
   AegisEnv, deployAegis, encodeWorldIdProofTakerArgs, generateWorldIdProof, USDC, WORLD_ID_MEMBERS,
@@ -102,7 +103,7 @@ describe("Real Semaphore (BN254) World ID proof -> AegisJIT swap", function () {
     const s = await env.swap(human, amount, data);
     expect(s.amountOut).to.equal(humanQ.amountOut); // 0 wei divergence
     expect(await callsEcPairing(s.receipt.hash)).to.equal(true);
-    await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.worldIdAdapter, BigInt(proof.nullifierHash), h);
+    await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.worldIdAdapter, BigInt(proof.nullifierHash), h, anyValue);
     console.log(`      swap gas with real World ID verification: ${s.receipt.gasUsed}`);
   });
 

@@ -31,9 +31,10 @@ contract MockAnonIdentityVerifier is IZKVerifier {
         uint256 nullifier,
         uint256[4] calldata revealArray,
         bytes calldata proof
-    ) external view returns (bool, address) {
+    ) external view returns (bool, address, uint40) {
         bytes32 digest = MessageHashUtils.toEthSignedMessageHash(attestationHash(taker, nullifier, revealArray));
         (address signer, ECDSA.RecoverError err, ) = ECDSA.tryRecover(digest, proof);
-        return (err == ECDSA.RecoverError.NoError && signer == ISSUER, taker);
+        bool ok = err == ECDSA.RecoverError.NoError && signer == ISSUER;
+        return (ok, taker, ok ? type(uint40).max : 0);
     }
 }

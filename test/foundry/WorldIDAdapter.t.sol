@@ -54,10 +54,10 @@ contract WorldIDAdapterTest is Test {
         vm.assume(taker != other);
         uint256[8] memory words = _prove(taker, nullifierHash, INITIAL_ROOT, adapter.EXTERNAL_NULLIFIER());
         bytes memory proof = abi.encode(INITIAL_ROOT, words);
-        (bool ok, address who) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], proof);
+        (bool ok, address who,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertTrue(ok);
         assertEq(who, taker);
-        (bool okOther,) = adapter.verifyProof(other, nullifierHash, [uint256(0), 0, 0, 0], proof);
+        (bool okOther,,) = adapter.verifyProof(other, nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertFalse(okOther);
     }
 
@@ -65,7 +65,7 @@ contract WorldIDAdapterTest is Test {
     function testFuzz_externalNullifier(address taker, uint256 nullifierHash, uint256 otherExternalNullifier) public {
         vm.assume(otherExternalNullifier != adapter.EXTERNAL_NULLIFIER());
         uint256[8] memory words = _prove(taker, nullifierHash, INITIAL_ROOT, otherExternalNullifier);
-        (bool ok,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, words));
+        (bool ok,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, words));
         assertFalse(ok);
     }
 
@@ -81,11 +81,11 @@ contract WorldIDAdapterTest is Test {
         router.registerRoot(newRoot);
         vm.warp(block.timestamp + elapsed);
 
-        (bool okOld,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, oldWords));
+        (bool okOld,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(INITIAL_ROOT, oldWords));
         assertEq(okOld, elapsed <= EXPIRY, "superseded root valid iff within expiry");
-        (bool okNew,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(newRoot, newWords));
+        (bool okNew,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(newRoot, newWords));
         assertTrue(okNew, "latest root always valid");
-        (bool okUnknown,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(unknownRoot, unknownWords));
+        (bool okUnknown,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], abi.encode(unknownRoot, unknownWords));
         assertFalse(okUnknown, "unknown root never valid");
     }
 
@@ -105,18 +105,18 @@ contract WorldIDAdapterTest is Test {
         vm.assume(taker != recipient && taker != FORWARDER);
         uint256[8] memory words = _prove(recipient, nullifierHash, INITIAL_ROOT, adapter.EXTERNAL_NULLIFIER());
         bytes memory envelope = abi.encode(INITIAL_ROOT, recipient, words);
-        (bool okFwd, address who) = adapter.verifyProof(FORWARDER, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        (bool okFwd, address who,) = adapter.verifyProof(FORWARDER, nullifierHash, [uint256(0), 0, 0, 0], envelope);
         assertTrue(okFwd);
         assertEq(who, recipient);
-        (bool okDirect,) = adapter.verifyProof(recipient, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        (bool okDirect,,) = adapter.verifyProof(recipient, nullifierHash, [uint256(0), 0, 0, 0], envelope);
         assertTrue(okDirect, "the recipient may present its own envelope");
-        (bool okRogue,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], envelope);
+        (bool okRogue,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], envelope);
         assertFalse(okRogue, "untrusted relayer cannot claim another beneficiary");
     }
 
     /// Arbitrary proof bytes never revert, only return false
     function testFuzz_malformedNeverReverts(address taker, uint256 nullifierHash, bytes calldata junk) public view {
-        (bool ok,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], junk);
+        (bool ok,,) = adapter.verifyProof(taker, nullifierHash, [uint256(0), 0, 0, 0], junk);
         assertFalse(ok);
     }
 
@@ -155,7 +155,7 @@ contract WorldIDAdapterTest is Test {
     function test_realProof_verifiesOnWorldIdVerifier() public {
         (WorldIDAdapter realAdapter,, SemaphoreVerifier verifier, Fixture memory f) = _realStack();
         verifier.verifyProof(f.proof, [f.root, f.nullifierHash, f.signalHash, f.externalNullifierHash]);
-        (bool ok, address who) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
+        (bool ok, address who,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
         assertTrue(ok);
         assertEq(who, f.signal);
     }
@@ -168,7 +168,7 @@ contract WorldIDAdapterTest is Test {
         f.proof[index] ^= mask;
         vm.expectRevert();
         verifier.verifyProof(f.proof, [f.root, f.nullifierHash, f.signalHash, f.externalNullifierHash]);
-        (bool ok,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
+        (bool ok,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
         assertFalse(ok);
     }
 
@@ -177,7 +177,7 @@ contract WorldIDAdapterTest is Test {
     function testFuzz_realProof_onlyBoundTaker(address other) public {
         (WorldIDAdapter realAdapter,,, Fixture memory f) = _realStack();
         vm.assume(other != f.signal);
-        (bool ok,) = realAdapter.verifyProof(other, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
+        (bool ok,,) = realAdapter.verifyProof(other, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root, f.proof));
         assertFalse(ok);
     }
 
@@ -186,12 +186,12 @@ contract WorldIDAdapterTest is Test {
         (WorldIDAdapter realAdapter, MockWorldIDRouter realRouter,, Fixture memory f) = _realStack();
         bytes memory proof = abi.encode(f.root, f.proof);
         realRouter.registerRoot(f.root + 1);
-        (bool okHistorical,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], proof);
+        (bool okHistorical,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertTrue(okHistorical, "superseded root still valid within 1 h");
         vm.warp(block.timestamp + EXPIRY + 1);
-        (bool okExpired,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], proof);
+        (bool okExpired,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], proof);
         assertFalse(okExpired, "expired root");
-        (bool okWrongRoot,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root + 1, f.proof));
+        (bool okWrongRoot,,) = realAdapter.verifyProof(f.signal, f.nullifierHash, [uint256(0), 0, 0, 0], abi.encode(f.root + 1, f.proof));
         assertFalse(okWrongRoot, "latest root, but the proof was not generated for it");
     }
 }

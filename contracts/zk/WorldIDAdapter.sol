@@ -64,7 +64,7 @@ contract WorldIDAdapter is IZKVerifier {
         uint256 nullifier,
         uint256[4] calldata /* revealArray — no selective disclosure in World ID */,
         bytes calldata proof
-    ) external view returns (bool, address) {
+    ) external view returns (bool, address, uint40) {
         uint256 root;
         address beneficiary = taker;
         uint256[8] memory groth16Proof;
@@ -72,18 +72,19 @@ contract WorldIDAdapter is IZKVerifier {
         if (proof.length == _DIRECT_PROOF_LENGTH) {
             (root, groth16Proof) = abi.decode(proof, (uint256, uint256[8]));
         } else if (proof.length == _FORWARDED_PROOF_LENGTH) {
-            if (uint256(bytes32(proof[32:64])) > type(uint160).max) return (false, address(0));
+            if (uint256(bytes32(proof[32:64])) > type(uint160).max) return (false, address(0), 0);
             (root, beneficiary, groth16Proof) = abi.decode(proof, (uint256, address, uint256[8]));
-            if (beneficiary != taker && !isTrustedForwarder[taker]) return (false, address(0));
+            if (beneficiary != taker && !isTrustedForwarder[taker]) return (false, address(0), 0);
         } else {
-            return (false, address(0));
+            return (false, address(0), 0);
         }
 
-        if (address(WORLD_ID).code.length == 0) return (false, address(0));
+        if (address(WORLD_ID).code.length == 0) return (false, address(0), 0);
         try WORLD_ID.verifyProof(root, GROUP_ID, signalHashOf(beneficiary), nullifier, EXTERNAL_NULLIFIER, groth16Proof) {
-            return (true, beneficiary);
+            // nullifierHash is stable per human per (app, action): the binding never expires
+            return (true, beneficiary, type(uint40).max);
         } catch {
-            return (false, address(0));
+            return (false, address(0), 0);
         }
     }
 }

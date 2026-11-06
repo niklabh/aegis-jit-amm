@@ -32,10 +32,10 @@ contract AnonAadhaarAdapterTest is Test {
         vm.assume(taker != other);
         age = bound(age, 0, MAX_AGE);
         (uint256[4] memory reveal, bytes memory proof) = _prove(taker, nullifier, block.timestamp - age);
-        (bool ok, address who) = adapter.verifyProof(taker, nullifier, reveal, proof);
+        (bool ok, address who,) = adapter.verifyProof(taker, nullifier, reveal, proof);
         assertTrue(ok);
         assertEq(who, taker);
-        (bool okOther,) = adapter.verifyProof(other, nullifier, reveal, proof);
+        (bool okOther,,) = adapter.verifyProof(other, nullifier, reveal, proof);
         assertFalse(okOther);
     }
 
@@ -44,14 +44,14 @@ contract AnonAadhaarAdapterTest is Test {
         offset = bound(offset, 1, 365 days);
         uint256 ts = future ? block.timestamp + offset : block.timestamp - MAX_AGE - offset;
         (uint256[4] memory reveal, bytes memory proof) = _prove(taker, nullifier, ts);
-        (bool ok,) = adapter.verifyProof(taker, nullifier, reveal, proof);
+        (bool ok,,) = adapter.verifyProof(taker, nullifier, reveal, proof);
         assertFalse(ok);
     }
 
     /// Arbitrary proof bytes never revert, only return false
     function testFuzz_malformedNeverReverts(address taker, uint256 nullifier, bytes calldata junk) public view {
         uint256[4] memory reveal = [uint256(1), 0, 0, 0];
-        (bool ok,) = adapter.verifyProof(taker, nullifier, reveal, junk);
+        (bool ok,,) = adapter.verifyProof(taker, nullifier, reveal, junk);
         assertFalse(ok);
     }
 }

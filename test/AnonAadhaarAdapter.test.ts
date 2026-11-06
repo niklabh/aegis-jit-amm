@@ -2,6 +2,7 @@
 import "@nomicfoundation/hardhat-chai-matchers";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
+import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 
 import { AEGIS_NULLIFIER_SEED, AegisEnv, deployAegis, MUMBAI_HUMAN_REVEAL, RevealArray, USDC } from "./utils/aegisFixture";
 
@@ -48,7 +49,7 @@ describe("AnonAadhaarAdapter (IZKVerifier over Anon Aadhaar Groth16)", function 
 
     const s = await env.swap(human, USDC(5_000), usdcIn(env, zk));
     expect(s.amountOut).to.equal(humanQ.amountOut);
-    await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, nullifier, hAddr);
+    await expect(s.tx).to.emit(env.contracts.router, "NullifierBound").withArgs(env.addr.adapter, nullifier, hAddr, anyValue);
   });
 
   it("MEV frontrun: a bot replaying the exact takerData bytes fails the signal check and pays the full surge fee", async function () {

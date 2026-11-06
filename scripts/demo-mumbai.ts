@@ -14,7 +14,7 @@ import {
   deployAegis, USDC, AegisEnv, generateRealProof, encodeRealProofTakerArgs, MAHARASHTRA_PACKED, RealProof,
   generateWorldIdProof, encodeWorldIdProofTakerArgs, worldIdArtifactsAvailable, WorldIdProof, WORLD_ID_MEMBERS,
 } from "../test/utils/aegisFixture";
-import { AegisOpcodes, AegisProgramBuilder, FEE_BPS } from "../src/aegisProgramBuilder";
+import { AegisOpcodes, AegisProgramBuilder, FEE_BPS, ZKVerifierType, encodeZKBindingClaim } from "../src/aegisProgramBuilder";
 
 const { ethers } = require("hardhat");
 
@@ -261,6 +261,31 @@ async function main() {
     await transferTrace(env, s.receipt, "Scenario 1A settlement: JIT withdraw → Aqua pull → taker push → JIT re-deposit");
     results.push({ name: "1A Human · ZK Aadhaar", tier: C.green + (real ? "Groth16 ✔" : "ZK (mock)") + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(s.amountOut)} WETH`,
       price: fmtUsdc(amount * 10n ** 18n / s.amountOut), fee: pct(fee.total, amount, 3), gas: s.receipt.gasUsed.toString(), hash: short(s.receipt.hash), status: C.green + "filled" + C.reset });
+
+    // ---------------- Scenario 1C: the bound nullifier replaces the proof ----------------
+    banner("1C · Same human, next trade: the nullifier is bound to this address → 33-byte claim, no pairing");
+    {
+      const claimNullifier = real ? BigInt(real.proof.publicSignals.nullifier) : 0xa11ce5n;
+      const claimData = env.takerData({ tokenIn: env.addr.usdc, zk: encodeZKBindingClaim(ZKVerifierType.AADHAAR, claimNullifier) });
+      const botQuoteC = await env.quote(bot, amount, botData);
+      const snapC = await rpc("evm_snapshot");
+      const botGasC = (await env.swap(bot, amount, botData)).receipt.gasUsed;
+      await rpc("evm_revert", [snapC]);
+      const cq = await env.quote(human, amount, claimData);
+      const feeC = await surgeFeeBreakdown(env, amount, true);
+      const cs = await env.swap(human, amount, claimData);
+      const [, validUntil] = await router.nullifierBinding(env.addr.adapter, claimNullifier);
+      table("0x2A fast path: [type][nullifier] claim checked against the on-chain binding (one SLOAD)", [
+        ["payload", `${ethers.getBytes(encodeZKBindingClaim(ZKVerifierType.AADHAAR, claimNullifier)).length} bytes  (the Groth16 payload in 1A was ${ethers.getBytes(zk).length} bytes)`],
+        ["binding", `nullifier ${short("0x" + claimNullifier.toString(16))} → ${short(hAddr)}  valid until ${new Date(Number(validUntil) * 1000).toISOString()} (epoch end)`],
+        ["quote()  (static)", `${fmtWeth(cq.amountOut, 6)} WETH`],
+        ["swap()   (executed)", `${fmtWeth(cs.amountOut, 6)} WETH  ${cs.amountOut === cq.amountOut ? C.green + "== quote ✔ (0 wei)" + C.reset : C.red + "!= quote" + C.reset}  ·  ${cs.amountOut > botQuoteC.amountOut ? C.green + "human tier ✔" + C.reset : C.red + "bot tier" + C.reset}`],
+        ["fee charged", `${fmtUsdc(feeC.total)} USDC  (${pct(feeC.total, amount, 3)})  ${feeC.expectedOut === cs.amountOut ? C.green + "off-chain model == on-chain ✔" + C.reset : C.red + "model mismatch" + C.reset}`],
+        ["gas · swap with claim", `${n(cs.receipt.gasUsed)}  vs  ${n(botGasC)} without any proof  →  fast-path overhead ${n(cs.receipt.gasUsed - botGasC)}  (1A with the full proof: ${n(s.receipt.gasUsed)})`],
+      ]);
+      results.push({ name: "1C Human · bound claim", tier: C.green + "binding ✔" + C.reset, inStr: `${fmtUsdc(amount, 0)} USDC`, outStr: `${fmtWeth(cs.amountOut)} WETH`,
+        price: fmtUsdc(amount * 10n ** 18n / cs.amountOut), fee: pct(feeC.total, amount, 3), gas: cs.receipt.gasUsed.toString(), hash: short(cs.receipt.hash), status: C.green + "filled" + C.reset });
+    }
   }
 
   // ---------------- Scenario 1B ----------------

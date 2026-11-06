@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
+import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import { IZKVerifier } from "../interfaces/IZKVerifier.sol";
 import { IAnonAadhaar } from "./IAnonAadhaar.sol";
 
@@ -78,7 +80,7 @@ contract AnonAadhaarAdapter is IZKVerifier {
         uint256 nullifier,
         uint256[4] calldata revealArray,
         bytes calldata proof
-    ) external view returns (bool, address) {
+    ) external view returns (bool, address, uint40) {
         uint256 timestamp;
         address beneficiary = taker;
         uint256[8] memory groth16Proof;
@@ -86,16 +88,16 @@ contract AnonAadhaarAdapter is IZKVerifier {
         if (proof.length == _DIRECT_PROOF_LENGTH) {
             (timestamp, groth16Proof) = abi.decode(proof, (uint256, uint256[8]));
         } else if (proof.length == _FORWARDED_PROOF_LENGTH) {
-            if (uint256(bytes32(proof[32:64])) > type(uint160).max) return (false, address(0));
+            if (uint256(bytes32(proof[32:64])) > type(uint160).max) return (false, address(0), 0);
             (timestamp, beneficiary, groth16Proof) = abi.decode(proof, (uint256, address, uint256[8]));
-            if (beneficiary != taker && !isTrustedForwarder[taker]) return (false, address(0));
+            if (beneficiary != taker && !isTrustedForwarder[taker]) return (false, address(0), 0);
         } else {
-            return (false, address(0));
+            return (false, address(0), 0);
         }
 
-        if (timestamp > block.timestamp || block.timestamp - timestamp > MAX_PROOF_AGE) return (false, address(0));
-        if (revealArray[_AGE_ABOVE_18] != 1) return (false, address(0));
-        if (REQUIRED_STATE != 0 && revealArray[_STATE] != REQUIRED_STATE) return (false, address(0));
+        if (timestamp > block.timestamp || block.timestamp - timestamp > MAX_PROOF_AGE) return (false, address(0), 0);
+        if (revealArray[_AGE_ABOVE_18] != 1) return (false, address(0), 0);
+        if (REQUIRED_STATE != 0 && revealArray[_STATE] != REQUIRED_STATE) return (false, address(0), 0);
 
         try ANON_AADHAAR.verifyAnonAadhaarProof(
             nullifierSeedFor(currentEpoch()),
@@ -105,9 +107,18 @@ contract AnonAadhaarAdapter is IZKVerifier {
             revealArray,
             groth16Proof
         ) returns (bool ok) {
-            return ok ? (true, beneficiary) : (false, address(0));
+            return ok ? (true, beneficiary, _bindingValidUntil(timestamp)) : (false, address(0), 0);
         } catch {
-            return (false, address(0));
+            return (false, address(0), 0);
         }
+    }
+
+    /// @notice How long 0x2A may honour a proof-less binding claim for a nullifier proven from a QR
+    ///         issued at `timestamp`: until the nullifier's epoch ends, and never beyond the point
+    ///         where the QR itself would be too old to prove with.
+    function _bindingValidUntil(uint256 timestamp) internal view returns (uint40) {
+        uint256 validUntil = Math.min(timestamp + MAX_PROOF_AGE, type(uint40).max);
+        if (EPOCH_DURATION != 0) validUntil = Math.min(validUntil, (currentEpoch() + 1) * EPOCH_DURATION - 1);
+        return uint40(validUntil);
     }
 }

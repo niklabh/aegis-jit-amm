@@ -165,6 +165,15 @@ export function encodeZKTakerArgs(nullifier: bigint, revealArray: RevealArray, p
   return encodeZKPayload(ZKVerifierType.AADHAAR, nullifier, revealArray, proof);
 }
 
+/**
+ * 0x2A binding claim (fast path): [uint16 33][verifierType][nullifier], no proof. Honoured while the
+ * nullifier is bound to msg.sender (see ZKIdentityGuard) on orders without an opcode-level state policy.
+ */
+export function encodeZKBindingClaim(verifierType: number, nullifier: bigint): string {
+  if (verifierType !== ZKVerifierType.WORLD_ID && verifierType !== ZKVerifierType.AADHAAR) throw new Error(`invalid proof type ${verifierType}`);
+  return solidityPacked(["uint16", "uint8", "uint256"], [33, verifierType, nullifier]);
+}
+
 /** World ID (type 1) payload: [L][0x01][nullifierHash][abi.encode(merkleRoot, [recipient,] uint256[8])] */
 export function encodeWorldIdTakerArgs(nullifierHash: bigint, proof: BytesLike): string {
   return encodeZKPayload(ZKVerifierType.WORLD_ID, nullifierHash, undefined, proof);
