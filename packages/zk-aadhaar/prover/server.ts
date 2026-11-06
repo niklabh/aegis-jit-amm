@@ -5,7 +5,7 @@
 //   GET  /health                      -> { ok, artifacts, worldId: { configured, rp_id, app_id } }
 //   POST /test-qr { timestamp }       -> { digits, png }      synthetic V2 QR signed by the TEST signer
 //   POST /prove   { digits, seed, signal } -> { qr, proof }   zkAadhaar parse + RSA check + Groth16
-//   POST /worldid/rp-context { action } -> IDKit `rp_context`  World ID relying-party request signature
+//   POST /worldid/rp-context { action, app_id? } -> IDKit `rp_context`  World ID relying-party request signature (set chosen by app id)
 //        (World ID 4.x IDKit requires every request to be signed server-side with the app's RP signing key;
 //         the key stays in this process, read from WORLD_ID_RP_SIGNING_KEY / the repo .env, never sent to the browser)
 //
@@ -20,8 +20,15 @@ import { artifactsAvailable, makeTestQr, proveFromQr, sha256 } from "./anon-aadh
 
 const PORT = Number(process.env.PORT ?? 8547);
 
-/** World ID relying-party settings: process env first, then the repo's git-ignored .env */
-function worldIdEnv(): { appId: string; rpId: string; signingKey: string } {
+/** One World ID app with its relying-party credentials (the signing key never leaves this process) */
+type WorldIdApp = { appId: string; rpId: string; signingKey: string; source: string };
+/**
+ * World ID relying-party settings: process env first, then the repo's git-ignored .env. Two apps can be configured,
+ * one registered in the production Developer Portal (PRODUCTION_WORLD_ID_*; the hosted Simulator resolves apps there)
+ * and one from the staging portal (WORLD_ID_STAGING_APP_ID + WORLD_ID_RP_*); a request is signed with the set whose
+ * app id matches the deployment's adapter.
+ */
+function worldIdApps(): WorldIdApp[] {
   const envFile = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".env");
   const fromFile: Record<string, string> = {};
   if (existsSync(envFile)) {
@@ -31,8 +38,16 @@ function worldIdEnv(): { appId: string; rpId: string; signingKey: string } {
     }
   }
   const get = (k: string) => (process.env[k] ?? fromFile[k] ?? "").trim();
-  return { appId: get("WORLD_ID_APP_ID") || get("WORLD_ID_STAGING_APP_ID"), rpId: get("WORLD_ID_RP_ID"), signingKey: get("WORLD_ID_RP_SIGNING_KEY") };
+  const sets: WorldIdApp[] = [
+    { appId: get("PRODUCTION_WORLD_ID_APP_ID"), rpId: get("PRODUCTION_WORLD_ID_RP_ID"), signingKey: get("PRODUCTION_WORLD_ID_RP_SIGNING_KEY"), source: "developer.world.org" },
+    { appId: get("WORLD_ID_APP_ID") || get("WORLD_ID_STAGING_APP_ID"), rpId: get("WORLD_ID_RP_ID"), signingKey: get("WORLD_ID_RP_SIGNING_KEY"), source: "staging-developer.world.org" },
+  ];
+  return sets.filter((s) => s.appId);
 }
+const worldIdFor = (appId?: string): WorldIdApp | undefined => {
+  const apps = worldIdApps();
+  return (appId ? apps.find((a) => a.appId === appId) : undefined) ?? apps.find((a) => a.rpId && a.signingKey) ?? apps[0];
+};
 const ALLOW = (process.env.ALLOW_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173").split(",");
 const MAX_BODY = 64 * 1024;
 
@@ -74,17 +89,26 @@ createServer(async (req, res) => {
   }
   try {
     if (req.method === "GET" && req.url === "/health") {
-      const w = worldIdEnv();
-      return send(res, origin, 200, { ok: true, artifacts: artifactsAvailable(), worldId: { configured: Boolean(w.rpId && w.signingKey), rp_id: w.rpId || null, app_id: w.appId || null } });
+      const apps = worldIdApps();
+      const w = worldIdFor();
+      return send(res, origin, 200, {
+        ok: true, artifacts: artifactsAvailable(),
+        worldId: {
+          configured: Boolean(w && w.rpId && w.signingKey), rp_id: w?.rpId || null, app_id: w?.appId || null,
+          apps: apps.map((a) => ({ app_id: a.appId, rp_id: a.rpId || null, configured: Boolean(a.rpId && a.signingKey), source: a.source })),
+        },
+      });
     }
 
     if (req.method === "POST" && req.url === "/worldid/rp-context") {
-      const { action } = await readJson(req);
-      if (typeof action !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(action)) return send(res, origin, 400, { error: "expected { action }" });
-      const w = worldIdEnv();
-      if (!w.rpId || !w.signingKey) return send(res, origin, 503, { error: "World ID RP not configured: set WORLD_ID_RP_ID and WORLD_ID_RP_SIGNING_KEY in .env (Developer Portal → app → RP registration)" });
+      const { action, app_id } = await readJson(req);
+      if (typeof action !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(action)) return send(res, origin, 400, { error: "expected { action, app_id? }" });
+      if (app_id !== undefined && (typeof app_id !== "string" || !/^app_[a-z0-9_]{1,80}$/.test(app_id))) return send(res, origin, 400, { error: "bad app_id" });
+      const w = worldIdFor(app_id);
+      if (!w || !w.rpId || !w.signingKey) return send(res, origin, 503, { error: `World ID RP not configured${app_id ? ` for ${app_id}` : ""}: set PRODUCTION_WORLD_ID_APP_ID / PRODUCTION_WORLD_ID_RP_ID / PRODUCTION_WORLD_ID_RP_SIGNING_KEY (developer.world.org) or WORLD_ID_STAGING_APP_ID / WORLD_ID_RP_ID / WORLD_ID_RP_SIGNING_KEY (staging portal) in .env` });
+      if (app_id && w.appId !== app_id) return send(res, origin, 503, { error: `no RP credentials for ${app_id}; configured: ${worldIdApps().map((a) => a.appId).join(", ")}` });
       const { sig, nonce, createdAt, expiresAt } = signRequest({ signingKeyHex: w.signingKey.replace(/^0x/, ""), action });
-      return send(res, origin, 200, { rp_id: w.rpId, nonce, created_at: createdAt, expires_at: expiresAt, signature: sig, app_id: w.appId || null });
+      return send(res, origin, 200, { rp_id: w.rpId, nonce, created_at: createdAt, expires_at: expiresAt, signature: sig, app_id: w.appId });
     }
 
     if (req.method === "POST" && req.url === "/test-qr") {

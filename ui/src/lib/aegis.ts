@@ -292,12 +292,12 @@ export function createAegisClient(dep: Deployment) {
     if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
     return j;
   }
-  async function proverHealth(): Promise<{ ok: boolean; artifacts: boolean; worldId?: { configured: boolean; rp_id: string | null; app_id: string | null } } | null> {
+  async function proverHealth(): Promise<{ ok: boolean; artifacts: boolean; worldId?: { configured: boolean; rp_id: string | null; app_id: string | null; apps?: { app_id: string; rp_id: string | null; configured: boolean; source: string }[] } } | null> {
     try { return await (await fetch(`${dep.zk.proverUrl}/health`)).json(); } catch { return null; }
   }
   /** IDKit `rp_context`: the relying-party request signature, made by the local prover process (the signing key never reaches the browser) */
   async function worldIdRpContext(action: string): Promise<{ rp_id: string; nonce: string; created_at: number; expires_at: number; signature: string; app_id: string | null }> {
-    const res = await fetch(`${dep.zk.proverUrl}/worldid/rp-context`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+    const res = await fetch(`${dep.zk.proverUrl}/worldid/rp-context`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, app_id: dep.worldId?.appId }) });
     const j = await res.json();
     if (!res.ok) throw new Error(j.error ?? `prover HTTP ${res.status}`);
     return j;

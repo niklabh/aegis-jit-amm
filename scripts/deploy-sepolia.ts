@@ -49,7 +49,8 @@ const CFG = {
   maxProofAge: 30 * 24 * 3600,
   epochDuration: 24 * 3600,
   epochGrace: 600,
-  worldIdAppId: process.env.WORLD_ID_APP_ID || process.env.WORLD_ID_STAGING_APP_ID || "app_staging_aegis_jit_mumbai",
+  // explicit WORLD_ID_APP_ID > app registered in the production Developer Portal (what the hosted Simulator resolves) > staging-portal app
+  worldIdAppId: process.env.WORLD_ID_APP_ID || process.env.PRODUCTION_WORLD_ID_APP_ID || process.env.WORLD_ID_STAGING_APP_ID || "app_staging_aegis_jit_mumbai",
   worldIdAction: "aegis-jit-fee-tier",
   worldIdEpochDuration: 0,
   worldIdEpochGrace: 600,
@@ -83,6 +84,10 @@ async function main() {
   let partial: Partial = { network: network.name, chainId, contracts: {} };
   let previousOrders: Array<{ orderHash: string; salt: string; shipTx: string }> = [];
   const finalPath = path.join(__dirname, "..", "deployments", network.name, "aegis.json");
+  // a checkpoint left behind by a run that did finish (it has the ship receipt and aegis.json exists) is stale:
+  // the finished record wins, so that ORDER_SALT / REDEPLOY apply to it
+  const stalePartial = fs.existsSync(partialPath()) && fs.existsSync(finalPath) && Boolean(JSON.parse(fs.readFileSync(partialPath(), "utf8")).ship);
+  if (stalePartial) { console.log(`${C.dim}ignoring stale checkpoint ${partialPath()} (that run finished)${C.reset}`); fs.unlinkSync(partialPath()); }
   if (fs.existsSync(partialPath())) {
     partial = JSON.parse(fs.readFileSync(partialPath(), "utf8"));
     if (partial.chainId !== chainId) throw new Error(`partial record is for chainId ${partial.chainId}, connected to ${chainId}`);
@@ -159,7 +164,8 @@ async function main() {
   for (const role of TAKER_ROLES) {
     const a = takers[role].address;
     const bal: bigint = await ethers.provider.getBalance(a);
-    if (bal < fund) await send(`fund ${role} with ${CFG.fundTakerEth} ETH`, () => deployer.sendTransaction({ to: a, value: fund - bal }));
+    // plain transfer to an EOA: fixed 21k gas (some public RPCs fail eth_estimateGas for value transfers with "OutOfFunds")
+    if (bal < fund) await send(`fund ${role} with ${CFG.fundTakerEth} ETH`, () => deployer.sendTransaction({ to: a, value: fund - bal, gasLimit: 21_000 }));
     else skip(`fund ${role}`);
     console.log(`  ${role.padEnd(11)} ${a}  ${ethers.formatEther(await ethers.provider.getBalance(a))} ETH`);
   }
@@ -306,6 +312,7 @@ async function main() {
     ],
   };
   const file = saveRecord(rec);
+  if (fs.existsSync(partialPath())) fs.unlinkSync(partialPath()); // the checkpoint is folded into the record
 
   banner("Summary");
   table(`AegisJIT on ${network.name}`, [

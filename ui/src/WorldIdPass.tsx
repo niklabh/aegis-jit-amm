@@ -36,7 +36,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
   const [idkit, setIdkit] = useState<{ root: bigint; nullifierHash: bigint; ok: boolean; rootStatus: string; error?: string } | null>(null);
   // live World ID through IDKit (World App, or the World ID Simulator for staging apps)
   const realRouter = w.backend === "worldid";
-  const [rpStatus, setRpStatus] = useState<{ configured: boolean; rp_id: string | null; app_id: string | null } | null>(null);
+  const [rpStatus, setRpStatus] = useState<{ configured: boolean; rp_id: string | null; app_id: string | null; apps?: { app_id: string; rp_id: string | null; configured: boolean; source: string }[] } | null>(null);
   const [rpContext, setRpContext] = useState<RpContext | null>(null);
   const [idkitOpen, setIdkitOpen] = useState(false);
   const [live, setLive] = useState<{ root: bigint; nullifierHash: bigint; proof: bigint[]; raw: unknown } | null>(null);
@@ -55,8 +55,13 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
     fetch(artifactUrl("semaphore.zkey"), { method: "HEAD" }).then((r) => setArtifacts(r.ok)).catch(() => setArtifacts(false));
     if (!realRouter) client.worldIdLatestRoot().then(setLatestRoot).catch(() => setLatestRoot(null));
     client.worldIdCurrentEpoch().then(setEpoch).catch(() => setEpoch(0n));
-    client.proverHealth().then((h) => setRpStatus(h?.worldId ?? { configured: false, rp_id: null, app_id: null })).catch(() => setRpStatus({ configured: false, rp_id: null, app_id: null }));
-  }, [client, w.artifactsBase, realRouter]);
+    client.proverHealth().then((h) => {
+      const wid = h?.worldId;
+      // the signer that matters is the one for THIS deployment's app id
+      const mine = wid?.apps?.find((a) => a.app_id === w.appId);
+      setRpStatus(wid ? (mine ? { configured: mine.configured, rp_id: mine.rp_id, app_id: mine.app_id, apps: wid.apps } : { ...wid, configured: wid.apps ? false : wid.configured }) : { configured: false, rp_id: null, app_id: null });
+    }).catch(() => setRpStatus({ configured: false, rp_id: null, app_id: null }));
+  }, [client, w.artifactsBase, realRouter, w.appId]);
   const idkitAction = worldIdActionFor(w.action, w.epochDuration ?? 0, epoch);
 
   async function startIdKit() {
@@ -198,7 +203,7 @@ export function WorldIdPass({ dep, worldId: w, client, attached, onAttach }: {
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <h3 className="text-sm font-medium text-slate-200">{realRouter ? "Live World ID: World App / Simulator via IDKit" : "World App / Simulator via IDKit (live World ID)"}</h3>
           <Badge tone={rpStatus === null ? "neutral" : rpStatus.configured ? "good" : "warn"}>
-            {rpStatus === null ? "prover…" : rpStatus.configured ? `RP signer ready · ${rpStatus.rp_id}` : "RP signer not configured (WORLD_ID_RP_ID / WORLD_ID_RP_SIGNING_KEY)"}
+            {rpStatus === null ? "prover…" : rpStatus.configured ? `RP signer ready · ${rpStatus.rp_id}` : `RP signer not configured for ${w.appId} (PRODUCTION_WORLD_ID_* or WORLD_ID_RP_* in .env)`}
           </Badge>
         </div>
         <p className="text-[11px] text-slate-500 mt-1.5">
